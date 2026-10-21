@@ -1,0 +1,176 @@
+[build-system]
+# setuptools>=77 understands the SPDX `license` string and `license-files`.
+requires = ["setuptools>=83", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "talkpipe-agents"
+dynamic = ["version"]
+description = "Agentic segments for talkpipe, built on Strands Agents: deterministic pipelines with bounded tool-using steps"
+readme = "README.md"
+authors = [
+    {name = "Travis Bauer", email = "tlbauer@sandia.gov"},
+]
+maintainers = [
+    {name = "Travis Bauer", email = "tlbauer@sandia.gov"},
+]
+requires-python = ">=3.11"
+keywords = ["ai", "agents", "talkpipe"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "COPYRIGHT"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "talkpipe>=1.1.0",  # resolve_source_and_model
+    "strands-agents[ollama]>=1.50",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=4.0.0",
+    # Lint/type tools are pinned to a minor series on purpose: ruff promotes
+    # new rules and mypy adds checks in minor releases, and CI resolves fresh,
+    # so an open floor would turn a tool release into a red build. Bump the
+    # pins deliberately (and the ruff-pre-commit rev with them).
+    "ruff>=0.17.0,<0.18",
+    "mypy>=2.3,<3",
+    "pre-commit>=4.0",
+    "bandit>=1.7.0",
+    "safety>=2.3.0",
+    "authlib>=1.6.12,<1.8",  # scanner-only pin; see the security extra
+]
+security = [
+    "bandit>=1.7.0",
+    "safety>=2.3.0",
+    # Not a project dependency: authlib is reached only through safety, and
+    # this is a tool pin like the ruff/mypy series pins above. authlib 1.8
+    # routes its httpx client through httpx2 whenever that package is
+    # installed, and mcp 2.x (a strands-agents dependency) installs it.
+    # safety 3.8 still hands that client an httpx 0.x Timeout, and the CLI
+    # crashes on startup -- with or without an API key -- before scanning
+    # anything. Lift the ceiling once a safety release works alongside
+    # httpx2 (or authlib stops preferring it). The floor is the usual
+    # security minimum: 1.6.12 is the first release with no known advisory,
+    # so capping below 1.8 cannot resolve onto a vulnerable authlib.
+    "authlib>=1.6.12,<1.8",
+]
+openai = ["strands-agents[openai]"]
+anthropic = ["strands-agents[anthropic]"]
+litellm = ["strands-agents[litellm]"]
+
+[project.urls]
+Homepage = "https://github.com/sandialabs/talkpipe-agents"
+Repository = "https://github.com/sandialabs/talkpipe-agents"
+Documentation = "https://github.com/sandialabs/talkpipe-agents#readme"
+Changelog = "https://github.com/sandialabs/talkpipe-agents/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/sandialabs/talkpipe-agents/issues"
+
+# Talkpipe discovers plugins through this entry-point group: importing
+# talkpipe imports this package, whose decorators register the llmAgent
+# segment with the chatterlang registry.
+[project.entry-points."talkpipe.plugins"]
+agents = "talkpipe_agents"
+
+# The scripted_model fixture (see talkpipe_agents.testing) is available in
+# any pytest run where this package is installed.
+[project.entry-points.pytest11]
+talkpipe_agents = "talkpipe_agents._pytest_plugin"
+
+# Version comes from git tags (v0.0.1a1, v0.1.0, ...) via setuptools_scm,
+# the same scheme talkpipe uses; there is no version string to bump in-tree.
+[tool.setuptools_scm]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests"]
+# *.md: ruff would otherwise reformat Python code blocks in prose; the docs
+# are not part of this gate.
+extend-exclude = ["build", "dist", ".venv", "*.md"]
+
+[tool.ruff.lint]
+# An explicit select rather than ruff's (version-dependent) defaults, so a
+# ruff upgrade never silently changes what CI enforces. CI fails on any
+# finding; there is no advisory pass.
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "PIE", "RUF", "PERF", "RET", "ISC", "FLY",
+    "PT",       # pytest style
+    "T10",      # debugger left in
+    "LOG", "G", # logging
+    "PGH",      # blanket noqa / type: ignore
+    "PLE",      # pylint errors only
+]
+ignore = [
+    "E501",   # line length: ruff format governs code; long strings/docstrings stay
+    "ISC001", # conflicts with the formatter
+    "G004",   # f-strings in logging calls are accepted style here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest-style rules only make sense in the test suite (an application
+# function that happens to be named test_* is not a test).
+"src/**" = ["PT"]
+# Tests assert on exception *types* deliberately; requiring a message match
+# on every `pytest.raises` adds noise without catching bugs.
+"tests/**" = ["PT011"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["talkpipe_agents"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+# 3.12+ so mypy can parse modern dependency stubs; the package itself
+# still supports Python 3.11.
+python_version = "3.12"
+files = ["src"]
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+enable_error_code = ["ignore-without-code"]
+
+[[tool.mypy.overrides]]
+module = [
+    "strands.*",
+]
+ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+
+[tool.bandit.assert_used]
+skips = ["*/test_*.py", "*/conftest.py"]
