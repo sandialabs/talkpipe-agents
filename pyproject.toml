@@ -47,7 +47,7 @@ dev = [
     "pre-commit>=4.0",
     "bandit>=1.7.0",
     "safety>=2.3.0",
-    "authlib>=1.6.12,<1.8",  # scanner-only pin; see the security extra
+    "authlib>=1.6.12,<1.10",  # scanner-only pin; see the security extra
 ]
 security = [
     "bandit>=1.7.0",
@@ -62,7 +62,7 @@ security = [
     # httpx2 (or authlib stops preferring it). The floor is the usual
     # security minimum: 1.6.12 is the first release with no known advisory,
     # so capping below 1.8 cannot resolve onto a vulnerable authlib.
-    "authlib>=1.6.12,<1.8",
+    "authlib>=1.6.12,<1.10",
 ]
 openai = ["strands-agents[openai]"]
 anthropic = ["strands-agents[anthropic]"]
