@@ -32,6 +32,12 @@ classifiers = [
 dependencies = [
     "talkpipe>=1.1.0",  # resolve_source_and_model
     "strands-agents[ollama]>=1.50",
+    "pyjwt>=2.15.0",
+    "urllib3>=2.8.0",
+    "certifi>=2026.10.19",
+    "aiohttp>=3.14.4",
+    "virtualenv>=21.14.7",
+    "litellm>=1.95.1",
 ]
 
 [project.optional-dependencies]
