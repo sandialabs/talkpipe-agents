@@ -250,6 +250,58 @@ def test_still_empty_reply_yields_visible_notice(scripted_model):
     assert "no answer" in answer
 
 
+class _UnparsedToolCallOnce(ScriptedModel):
+    """Fails its first model call the way Ollama rejects a truncated
+    tool call, then plays its script."""
+
+    failed = False
+
+    async def stream(self, *args, **kwargs):
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError(
+                "error parsing tool call: raw='{\"a\": 2', "
+                "err=unexpected end of JSON input (status code: -1)"
+            )
+        async for event in super().stream(*args, **kwargs):
+            yield event
+
+
+@pytest.fixture
+def no_retry_delay(monkeypatch):
+    async def instant(_seconds):
+        return None
+
+    monkeypatch.setattr("strands.event_loop._retry.asyncio.sleep", instant)
+
+
+def test_unparsed_tool_call_is_retried(no_retry_delay):
+    """A tool call the server could not parse is a sampling accident:
+    the model call is retried instead of ending the run."""
+    model = _UnparsedToolCallOnce().call("add", a=2, b=3).say("5")
+    with scripted_source(model=model):
+        seg = LLMAgent(source="scripted", model="test", tools=["add"])
+        assert list(seg.transform(iter(["2 + 3?"]))) == ["5"]
+        chat = AgentChat(source="scripted", model="test", tools=["add"])
+        model.failed = False
+        model.call("add", a=1, b=1).say("2")
+        assert chat.ask("1 + 1?") == "2"
+    assert added == [(2, 3), (1, 1)]
+
+
+def test_other_model_errors_are_not_retried():
+    class Broken(ScriptedModel):
+        async def stream(self, *args, **kwargs):
+            raise RuntimeError("model not found")
+            yield
+
+    with (
+        scripted_source(model=Broken()),
+        pytest.raises(Exception, match="model not found"),
+    ):
+        AgentChat(source="scripted", model="test").ask("hi")
+
+
 def test_llm_agent_segment_retries_empty_reply(scripted_model):
     scripted_model.script.extend(
         [("text", "<think>hmm</think>"), ("text", "recovered")]

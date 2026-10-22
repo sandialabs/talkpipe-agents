@@ -25,9 +25,10 @@ directly for Python composition.
 - ``segments`` — the ``llmAgent`` chatterlang segment.
 - ``chat`` — ``AgentChat``, a thin multi-turn wrapper for interactive
   sessions (what a chat UI drives).
-- ``hooks`` — ``AgentHooks``, the Strands hook provider both entry
-  points install: per-tool-call progress lines and scrubbing of leaked
-  tool-call syntax as messages are stored.
+- ``hooks`` — ``AgentHooks`` and ``AgentRetryStrategy``, the Strands
+  hook providers both entry points install: per-tool-call progress
+  lines, scrubbing of leaked tool-call syntax as messages are stored,
+  and retrying a model call whose tool call the server could not parse.
 - ``replies`` — ``ask_and_clean`` (one prompt under Strands ``limits``,
   with the empty-reply retry) and ``agent_limits``.
 - ``support`` — the shared progress convention (``teller``) and reply

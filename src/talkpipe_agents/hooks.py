@@ -1,6 +1,7 @@
-"""``AgentHooks`` — the Strands hook provider both entry points install.
+"""``AgentHooks`` and ``AgentRetryStrategy`` — the Strands hook providers
+both entry points install.
 
-Two concerns that belong at the agent loop rather than around it:
+Three concerns that belong at the agent loop rather than around it:
 
 - **progress**: one line per tool call (``agent → name(args…)``), and one
   more when a tool call came back as an error (``agent ← name: error: …``),
@@ -12,7 +13,12 @@ Two concerns that belong at the agent loop rather than around it:
   every assistant message as Strands stores it, so it is never replayed
   into the model's context — where it derails later turns — and never
   reaches the reply either, since the stored message is what the result
-  is read from.
+  is read from;
+- **retrying a tool call the server could not parse**: Ollama rejects a
+  model turn whose tool-call JSON is malformed (gpt-oss sometimes stops
+  mid-object) with ``error parsing tool call``. That is a sampling
+  accident, not a fault in the request, so the model call is retried the
+  way Strands retries throttling, instead of ending the whole run.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from strands.agent import ModelRetryStrategy
 from strands.hooks import (
     AfterToolCallEvent,
     BeforeToolCallEvent,
@@ -35,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 _ARGS_CHARS = 120
 _ERROR_CHARS = 200
+# What Ollama's error says when it cannot decode the model's tool call.
+_UNPARSED_TOOL_CALL = "error parsing tool call"
 
 
 class AgentHooks(HookProvider):
@@ -79,3 +88,11 @@ class AgentHooks(HookProvider):
             if cleaned != text:
                 block["text"] = cleaned
                 self._tell("agent: scrubbed leaked tool-call syntax from a reply")
+
+
+class AgentRetryStrategy(ModelRetryStrategy):
+    """Strands' default model-call retry (throttling, same backoff and
+    attempt count), extended to a tool call the server failed to parse."""
+
+    def is_retryable(self, exception: Exception) -> bool:
+        return super().is_retryable(exception) or _UNPARSED_TOOL_CALL in str(exception)

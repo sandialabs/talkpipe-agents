@@ -19,7 +19,7 @@ from typing import Any
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
 
-from .hooks import AgentHooks
+from .hooks import AgentHooks, AgentRetryStrategy
 from .models import build_agent_model
 from .replies import agent_limits, ask_and_clean
 from .support import teller
@@ -116,6 +116,7 @@ class AgentChat:
             callback_handler=None,
             conversation_manager=manager,
             hooks=[AgentHooks(self.tell)],
+            retry_strategy=AgentRetryStrategy(),
         )
 
     @property

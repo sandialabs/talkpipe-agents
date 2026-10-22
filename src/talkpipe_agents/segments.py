@@ -41,7 +41,7 @@ from talkpipe.chatterlang.registry import register_segment
 from talkpipe.pipe.core import AbstractSegment
 from talkpipe.util.data_manipulation import assign_property, extract_property
 
-from .hooks import AgentHooks
+from .hooks import AgentHooks, AgentRetryStrategy
 from .models import build_agent_model
 from .models import model_params as parse_model_params
 from .replies import agent_limits, ask_and_clean
@@ -163,6 +163,7 @@ class LLMAgent(AbstractSegment):
             # the default handler prints to stdout — never in a pipeline
             callback_handler=None,
             hooks=[AgentHooks(self.tell)],
+            retry_strategy=AgentRetryStrategy(),
             state=self.state,
         )
 

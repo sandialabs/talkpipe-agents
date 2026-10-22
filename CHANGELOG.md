@@ -5,6 +5,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- A tool call the model server could not parse no longer ends the agent
+  run. Ollama rejects a turn whose tool-call JSON is malformed (gpt-oss
+  sometimes stops mid-object) with `error parsing tool call`; `llmAgent`
+  and `AgentChat` now retry that model call with Strands' throttling
+  backoff, as they already did for throttling. Other model errors still
+  raise at once.
+
 ## 0.1.0 (2026-10-21)
 
 ### Added
