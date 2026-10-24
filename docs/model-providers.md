@@ -76,7 +76,20 @@ built in:
   `openai`/`openai_responses`, `openai_chat`, `anthropic` and `litellm` send them as
   the Strands model's `params` (with `temperature=` added unless
   `model_params` sets its own); `ollama` sends them as Ollama's
-  `options`. Malformed JSON fails when the script compiles.
+  `options`, except `replay_thinking` (below). Malformed JSON fails when
+  the script compiles.
+- **Ollama thinking models keep their reasoning between turns.** A
+  model that reasons before its tool calls (minimax, qwen3, deepseek-r1,
+  …) often decides its next steps there. The `ollama` source stores that
+  reasoning on the assistant message and sends it back to Ollama as the
+  message's `thinking` on later turns. Without it, such a model forgets
+  its plan every turn and can search until it runs out of turns. A
+  turn's text and all its tool calls go back as one assistant message,
+  and each tool result carries its `tool_name`, as Ollama's chat API
+  expects. Models that do not think are unaffected. Replayed reasoning
+  takes up context, so a model with a small `num_ctx` may reach it
+  sooner. If a model reacts badly to the replay, turn it off with
+  `model_params='{"replay_thinking": false}'`.
 - **Not talkpipe's `eliza`.** talkpipe's scripted `eliza` responder is a
   `llmPrompt` source only — it cannot call tools, so it is not an agent
   source. If your configured default source is `eliza`, pass `source=`

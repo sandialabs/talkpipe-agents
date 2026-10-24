@@ -10,6 +10,8 @@ design ("Putting Agents in their Place").
 
 - `src/talkpipe_agents/` — the package: `segments.py` (`llmAgent`),
   `chat.py` (`AgentChat`), `models.py` (source→Strands-Model registry),
+  `ollama_model.py` (`ThinkingOllamaModel`: the `ollama` source's
+  provider, replaying `thinking` and threading turns),
   `tools.py` (name→tool registry + `ask_user`/`think`),
   `script_tools.py` (chatterlang scripts as tools: `make_script_tool`
   + the `scriptTool` segment), `common_tools.py` (the generic tool

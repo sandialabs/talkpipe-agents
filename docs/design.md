@@ -13,6 +13,7 @@ The package is small and each module has one role:
 | `segments.py` | `llmAgent` — the talkpipe segment that runs a tool-using agent as one pipeline step |
 | `chat.py`     | `AgentChat` — the same agent as a multi-turn conversation, for interactive UIs |
 | `models.py`   | source/model string resolution → Strands `Model` objects, via a pluggable `register_agent_model` registry |
+| `ollama_model.py` | `ThinkingOllamaModel` — Strands' `OllamaModel` for the `ollama` source, keeping a thinking model's reasoning between turns and sending each turn back as one message with named tool results |
 | `tools.py`    | a name → tool registry (`register_agent_tool`) so scripts can reference tools by name, plus the generic `ask_user` and `think` tools |
 | `script_tools.py` | chatterlang scripts as tools — `make_script_tool` and the `scriptTool` segment, so a script can define documented tooling scripts inline |
 | `common_tools.py` | a suite of generally useful, bounded tools registered by name — see [Tools and skills](tools-and-skills.md) |

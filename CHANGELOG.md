@@ -5,6 +5,21 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- Ollama models that reason between tool calls no longer forget their
+  plan every turn. Strands' Ollama provider discarded the model's
+  `thinking`, so a model such as minimax-m3.1-flash that decides in its
+  reasoning which results to keep searched again on its next turn,
+  often until it hit the turn limit. The `ollama` source now stores
+  the reasoning on the assistant message and sends it back as that
+  message's `thinking`. It also sends a turn's text and all its tool
+  calls as one assistant message instead of one message per call, and
+  names each tool result with `tool_name`, as Ollama's chat API expects.
+  Models that do not think are unaffected by the replay, but the
+  message threading changes for every model. `model_params='{"replay_thinking": false}'`
+  turns the replay off for a model that reacts badly to it.
+
 ## 0.1.1 (2026-10-23)
 
 ### Fixed

@@ -836,14 +836,13 @@ def test_ollama_connection_error_names_the_server_and_the_setting(monkeypatch):
     import asyncio
 
     import httpx
-    from strands.models import ollama as strands_ollama
+    import ollama
     from talkpipe.util.config import get_config
 
     async def refuse(self, *args, **kwargs):
         raise httpx.ConnectError("All connection attempts failed")
-        yield  # pragma: no cover - makes this an async generator
 
-    monkeypatch.setattr(strands_ollama.OllamaModel, "stream", refuse)
+    monkeypatch.setattr(ollama.AsyncClient, "chat", refuse)
     monkeypatch.delenv("TALKPIPE_OLLAMA_SERVER_URL", raising=False)
     get_config(reload=True)
     try:
@@ -867,14 +866,12 @@ def test_ollama_missing_model_says_which_server_and_how_to_pull(monkeypatch):
     import asyncio
 
     import ollama
-    from strands.models import ollama as strands_ollama
     from talkpipe.util.config import get_config
 
     async def not_found(self, *args, **kwargs):
         raise ollama.ResponseError("model 'llama3.9' not found", 404)
-        yield  # pragma: no cover - makes this an async generator
 
-    monkeypatch.setattr(strands_ollama.OllamaModel, "stream", not_found)
+    monkeypatch.setattr(ollama.AsyncClient, "chat", not_found)
     monkeypatch.setenv("TALKPIPE_OLLAMA_SERVER_URL", "http://gpu-box:11434")
     get_config(reload=True)
     try:
@@ -899,16 +896,14 @@ def test_ollama_model_without_tool_support_says_to_pick_another(monkeypatch):
     import asyncio
 
     import ollama
-    from strands.models import ollama as strands_ollama
     from talkpipe.util.config import get_config
 
     async def no_tools(self, *args, **kwargs):
         raise ollama.ResponseError(
             "registry.ollama.ai/library/llama2:latest does not support tools", 400
         )
-        yield  # pragma: no cover - makes this an async generator
 
-    monkeypatch.setattr(strands_ollama.OllamaModel, "stream", no_tools)
+    monkeypatch.setattr(ollama.AsyncClient, "chat", no_tools)
     monkeypatch.setenv("TALKPIPE_OLLAMA_SERVER_URL", "http://gpu-box:11434")
     get_config(reload=True)
     try:

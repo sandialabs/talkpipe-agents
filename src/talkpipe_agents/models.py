@@ -242,15 +242,22 @@ def _ollama_model(
 ) -> Model:
     """Host comes from talkpipe's OLLAMA_SERVER_URL config (i.e.
     TALKPIPE_OLLAMA_SERVER_URL), like talkpipe's own Ollama adapter;
-    unset means the ollama client's localhost default."""
-    ollama_cls = _import_provider("ollama", "OllamaModel", "ollama")
+    unset means the ollama client's localhost default. The model is
+    ``ThinkingOllamaModel``, which keeps a thinking model's reasoning
+    between turns; ``"replay_thinking": false`` in *params* stops it
+    sending that reasoning back."""
+    _import_provider("ollama", "OllamaModel", "ollama")  # names the extra if missing
+    from .ollama_model import ThinkingOllamaModel
+
     host = get_config().get(OLLAMA_SERVER_URL) or None
-    params = kwargs.pop("params", None)
+    params = dict(kwargs.pop("params", None) or {})
+    if "replay_thinking" in params:
+        kwargs["replay_thinking"] = bool(params.pop("replay_thinking"))
     if params:  # Ollama's request parameters are its "options" (num_ctx, top_k, …)
         kwargs["options"] = {**(kwargs.get("options") or {}), **params}
     if temperature is not None:
         kwargs["temperature"] = temperature
-    return _hinting(ollama_cls, _ollama_hint)(host, model_id=model, **kwargs)
+    return _hinting(ThinkingOllamaModel, _ollama_hint)(host, model_id=model, **kwargs)
 
 
 def _params_with_temperature(

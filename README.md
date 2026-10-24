@@ -136,8 +136,10 @@ writes it to `chatterlang_ref.html`/`chatterlang_ref.txt`, and
 - [Model providers](docs/model-providers.md) — the built-in `ollama`,
   `openai` (= `openai_responses`), `openai_chat`, `anthropic`, and
   `litellm` sources,
-  provider request parameters (`model_params`), configured defaults, and
-  registering any other Strands provider.
+  provider request parameters (`model_params`), how the `ollama` source
+  keeps a thinking model's reasoning between turns (and how to turn
+  that off), configured defaults, and registering any other Strands
+  provider.
 - [Tools and skills](docs/tools-and-skills.md) — the tool registry, the shipped tools
   (ask_user, think, calculator, files, web, notepad, …) with a working
   example of each, chatterlang scripts as tools, and agent skills folders.
