@@ -64,6 +64,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   descriptions mentioned only that `"~"` is expanded, and gpt-oss
   took that as a hint and listed or searched the home directory when
   asked about the current one.
+- An `llmAgent` item that its turn or token limit cuts off before any
+  answer no longer passes unnoticed. The segment still yields the
+  empty text, but now also logs a warning naming the limit, unless a
+  `progress=` callable was given (the host already shows the limit
+  line then). Without logging configured, a capped item used to show
+  up only as a blank line.
 
 ### Documentation
 
@@ -86,6 +92,20 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   too, and names the findings loop's three registered session tools;
   the providers page explains the `reasoningContent` warning the
   OpenAI and LiteLLM sources log for reasoning models.
+- The findings loop page's RAG example now puts the kept findings in
+  the `_background` field, the one `AppendRAGSources` reads, so the
+  answer gets its `Sources:` list; it used a field `AppendRAGSources`
+  never looks at, and the sources were silently left off. The example
+  also says it continues the complete example's `__main__` block. The
+  page explains the empty source the complete example prints for its
+  calculation (a plain-string finding has none), says that
+  `findingTool` items and `judgeFindings`' findings field take the
+  same shapes a finding tool may return, so a script can label and
+  source its findings, and that the loop has nothing to judge when no
+  finding tool is among the tools.
+- The custom provider example on the providers page passes the
+  script's `model_params` (`params=`) on to its model. It used to
+  drop them silently.
 
 ## 0.1.1 (2026-10-23)
 

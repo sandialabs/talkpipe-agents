@@ -146,6 +146,13 @@ agent → enough_information({'reason': 'The kept findings provide both heights 
 Agent judged it had enough to answer (The kept findings provide both heights and the calculated ratio, enough to answer the question): kept 3 findings after 3 calls, ignored 0.
 ```
 
+After the answer, the last line printed is the kept findings' sources,
+`['eiffel.md', 'washington.md', '']`. The empty one is the
+calculation: `calculate` returns a plain string, which becomes a
+finding labelled with the tool's name but with no source. Return a
+`Finding` or a dict with a `source` (as `search_notes` does) when the
+answer should be able to cite it.
+
 The question says "my notes" so the agent starts with `search_notes`.
 Asked without it, gpt-oss sometimes reads Wikipedia with `fetch_page`
 instead, and a 3000-character slice of a page rarely holds the height.
@@ -207,10 +214,16 @@ INPUT FROM "According to https://www.iana.org/help/example-domains what are exam
 ```
 
 Each 1500-character passage of the page is judged separately, so only
-the passages that help reach the answer. The tool takes `text`, which is
-fed to the script as its input stream, and `looking_for`, which goes to
-the judge. Like `scriptTool`, the tool is registered when the script
-compiles, and each call runs a fresh instance of the script.
+the passages that help reach the answer. The items the script emits
+take the same shapes a `@finding_tool` function may return: a string
+is a finding labelled with the tool's name and no source, while a dict
+with `text` and, optionally, `label`, `source` and `key` names its
+finding, so the trace and `last_outcome` can tell findings apart.
+
+The tool takes `text`, which is fed to the script as its input
+stream, and `looking_for`, which goes to the judge. Like `scriptTool`,
+the tool is registered when the script compiles, and each call runs a
+fresh instance of the script.
 `make_finding_tool(name, description, script)` builds the same tool
 from Python.
 
@@ -226,7 +239,9 @@ from Python.
 | `hooks` | — | from Python: more [Strands hook providers](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/hooks/) for every agent |
 
 The loop, `findings_as` and `hooks` are `llmAgent`'s; `AgentChat` has
-none of them.
+none of them. The loop judges only what finding tools return: with no
+finding tool among `tools`, there is nothing to judge, and each item
+ends "stopped without saying it had enough" with nothing kept.
 
 `findings_as` (like `set_as`) needs dict items. In chatterlang, turn a
 prompt into one first and name its field:
@@ -275,24 +290,34 @@ After each item, `last_outcome` holds a `FindingsOutcome`:
 Instead of the agent's own reply, you can answer from the kept findings
 with talkpipe's RAG stages, like any retrieval. `Finding.to_search_result()`
 gives back the original `SearchResult`, or builds one from the
-finding's text, label and source:
+finding's text, label and source. The lines below continue the
+complete example's `__main__` block, where `agent` and `question` are
+defined:
 
 ```python
-from talkpipe.llm.chat import LLMPrompt
-from talkpipe.pipelines.basic_rag import AppendRAGSources, ConstructRAGPrompt
+    from talkpipe.llm.chat import LLMPrompt
+    from talkpipe.pipelines.basic_rag import AppendRAGSources, ConstructRAGPrompt
 
-answer = (
-    ConstructRAGPrompt(prompt_directive="Answer the question.",
-                       background_field="background", content_field="question",
-                       set_as="prompt")
-    | LLMPrompt(source="ollama", model="gpt-oss", field="prompt", set_as="partial")
-    | AppendRAGSources(partial_answer_field="partial", set_as="answer")
-).as_function(single_in=True, single_out=True)
+    answer = (
+        ConstructRAGPrompt(prompt_directive="Answer the question.",
+                           background_field="_background", content_field="question",
+                           set_as="prompt")
+        | LLMPrompt(source="ollama", model="gpt-oss", field="prompt", set_as="partial")
+        | AppendRAGSources(partial_answer_field="partial", set_as="answer")
+    ).as_function(single_in=True, single_out=True)
 
-outcome = agent.last_outcome
-result = answer({"question": question,
-                 "background": [f.to_search_result() for f in outcome.findings]})
+    outcome = agent.last_outcome
+    result = answer({"question": question,
+                     "_background": [f.to_search_result() for f in outcome.findings]})
+    print(result["answer"])
 ```
+
+The background goes in the field `_background` because that is the
+field `AppendRAGSources` reads its sources from; under any other name
+the answer comes back with no sources appended. With it, the answer
+ends with a `Sources:` list: `eiffel.md`, `washington.md` and
+`calculate`. The calculation has no source (a plain-string finding has
+none), so `AppendRAGSources` lists it by its label, the tool's name.
 
 ## The pieces, for use elsewhere
 
@@ -331,6 +356,8 @@ another system with different tools:
   Like `llmAgent`, it falls back to the configured default model when
   `source`/`model` are left out.
 
+  The findings field holds a list in any of the shapes a finding tool
+  may return (strings, dicts with `text`, `Finding`s, search results).
   It sets `judged` to `{"finding", "keep", "reason"}` dicts, or, with
   `drop_ignored`, to the kept findings only.
 - **`JudgeFindings(session, judge)`** is the Strands hook provider.

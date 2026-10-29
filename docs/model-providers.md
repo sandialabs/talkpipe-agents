@@ -111,7 +111,9 @@ call, where `factory(model, *, temperature=None, **kwargs)` returns a
 Strands `Model` and *name* is what scripts then pass as `source=`
 (`agent_model_sources()` lists the names registered so far).
 When the script sets `model_params`, the factory receives them as
-`params=` (a dict); otherwise no `params` keyword is passed.
+`params=` (a dict); otherwise no `params` keyword is passed. A factory
+that does not pass `params` on to its model drops them without a word,
+so take it as a keyword, as the example below does.
 Strands ships more providers than the four registered here (Amazon
 Bedrock, Gemini, Mistral, llama.cpp, …), and a factory is also the way
 to hand a provider explicit settings instead of environment variables.
@@ -127,12 +129,14 @@ from strands.models.openai import OpenAIModel
 from talkpipe_agents import register_agent_model
 
 
-def gpu_box(model, *, temperature=None, **kwargs):
-    params = {"temperature": temperature} if temperature is not None else None
+def gpu_box(model, *, temperature=None, params=None, **kwargs):
+    params = dict(params or {})  # the script's model_params, if any
+    if temperature is not None:
+        params.setdefault("temperature", temperature)
     return OpenAIModel(
         client_args={"base_url": "http://my-gpu-box:8000/v1", "api_key": "unused"},
         model_id=model,
-        params=params,
+        params=params or None,
     )
 
 

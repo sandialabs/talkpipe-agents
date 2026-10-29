@@ -185,6 +185,7 @@ class LLMAgent(AbstractSegment):
         self.field = field
         self.set_as = set_as
         self._progress = teller(progress, logger)
+        self._default_progress = progress is None
         self.state = AgentState()
         self.last_result: Any = None
         self._agent: Agent | None = None
@@ -253,6 +254,18 @@ class LLMAgent(AbstractSegment):
         self.last_result, answer = ask_and_clean(
             agent, prompt, limits=self.limits, tell=self.tell
         )
+        stop_reason = str(getattr(self.last_result, "stop_reason", ""))
+        if not answer and stop_reason.startswith("limit_") and self._default_progress:
+            # An item that yields nothing must not pass unnoticed when no
+            # progress channel is shown (the INFO lines are silent by default).
+            key = stop_reason.removeprefix("limit_")
+            logger.warning(
+                "llmAgent: an item yielded an empty answer: the agent stopped at "
+                "its %s limit (%s) before answering; raise the limit or ask a "
+                "smaller question",
+                key,
+                (self.limits or {}).get(key),
+            )
         return answer
 
     def _prompt_of(self, item: Any) -> Any:

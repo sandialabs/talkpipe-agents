@@ -573,6 +573,26 @@ def test_segment_keeps_last_result_with_stop_reason(scripted_model):
     assert "agent: stopped at the turns limit (2)" in told
 
 
+def test_an_item_emptied_by_the_turn_cap_warns_by_default(scripted_model, caplog):
+    scripted_model.script.extend([("tool", "add", {"a": 1, "b": 1})] * 5)
+    seg = LLMAgent(source="scripted", model="test", tools=["add"], max_turns=2)
+    with caplog.at_level("WARNING", logger="talkpipe_agents.segments"):
+        assert list(seg.transform(iter(["loop"]))) == [""]
+    [record] = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert "empty answer" in record.getMessage()
+    assert "turns limit (2)" in record.getMessage()
+
+
+def test_no_cap_warning_when_the_host_shows_progress(scripted_model, caplog):
+    scripted_model.script.extend([("tool", "add", {"a": 1, "b": 1})] * 5)
+    seg = LLMAgent(
+        source="scripted", model="test", tools=["add"], max_turns=2, progress=print
+    )
+    with caplog.at_level("WARNING", logger="talkpipe_agents.segments"):
+        list(seg.transform(iter(["loop"])))
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
 def test_unknown_source_lists_registered(scripted_model):
     with pytest.raises(ValueError, match="unknown agent model source"):
         build_agent_model("nosuch", "m")

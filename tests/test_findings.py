@@ -111,6 +111,19 @@ def test_a_search_result_becomes_a_finding_and_back():
     assert built.document == {"content": "text", "title": "L", "source": "s"}
 
 
+def test_kept_findings_feed_talkpipes_rag_sources():
+    """The docs/findings.md RAG example: AppendRAGSources reads ``_background``."""
+    from talkpipe.pipelines.basic_rag import AppendRAGSources
+
+    kept = [Finding("330 m", label="eiffel.md", source="eiffel.md"), Finding("1.95")]
+    item = {
+        "partial": "About 1.95 times.",
+        "_background": [f.to_search_result() for f in kept],
+    }
+    [out] = AppendRAGSources(partial_answer_field="partial", set_as="answer")([item])
+    assert out["answer"] == "About 1.95 times.\n\nSources:\n- eiffel.md"
+
+
 def test_dict_hits_are_normalized_and_renamed():
     hit = {"doc_id": "", "score": 1, "document": {"shingle": "x", "path": "/p"}}
     finding = Finding.from_search_result(hit, rename_fields={"path": "source"})

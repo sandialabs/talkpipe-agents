@@ -100,8 +100,9 @@ The placement gives you real boundaries, not vibes:
   built-in sources do),
   so a confused model cannot spin forever or run up a bill. When a cap
   ends an item before any answer, the segment yields whatever text there
-  was (possibly empty) and `last_result.stop_reason` names the limit;
-  `AgentChat` returns a visible notice naming it instead.
+  was (possibly empty) and `last_result.stop_reason` names the limit —
+  an empty answer is also logged as a warning unless you pass your own
+  `progress=`; `AgentChat` returns a visible notice naming it instead.
 - **State boundary** — by default every item can get a fresh agent, so
   the step is stateless and items are independent; `multi_turn=True`
   deliberately opts one conversation into spanning the stream. (To feed
