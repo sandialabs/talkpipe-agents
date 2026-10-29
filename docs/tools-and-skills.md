@@ -75,7 +75,7 @@ chatterlang_script --logger_levels talkpipe_agents:INFO \
 ```
 
 ```
-INFO:talkpipe_agents.segments:agent → lookup_ticket({'ticket_id': 'T-1'})
+2026-10-29 12:43:34,620 - INFO:talkpipe_agents.segments:agent → lookup_ticket({'ticket_id': 'T-1'})
 Ticket **T‑1** is about a **printer on fire on the third floor**.
 It is still marked as **open**.
 ```
@@ -174,6 +174,11 @@ the agent-facing bounds above.
 | `save_note` / `read_notes` | a scratch pad kept in the agent's Strands `AgentState` — one pad per conversation in `AgentChat`, one per segment in `llmAgent` (carried across the items of a stream) |
 | `summarize_notes` | a compact overview of the pad — counts, sizes, clipped previews — for surveying memory without reading it all |
 | `update_note` / `delete_note` / `clear_notes` | revise or expunge memory: replace a note in place, delete one (numbers stay stable), or wipe the pad |
+
+Three more names are registered alongside them, so they appear in
+`agent_tool_names()` and in an unknown-tool error's list:
+`enough_information`, `keep_finding` and `ignore_finding`. They belong
+to [the findings loop](findings.md), which adds them itself.
 
 Each tool below comes with a complete script that runs as shown with
 the README's model (`ollama pull gpt-oss`): nothing to install, write
@@ -409,10 +414,12 @@ Save that as `word_count.tp` and run it with
 `chatterlang_script --script word_count.tp`. `--script` takes a file path
 as well as inline script text, and a script like this one cannot be
 passed inline in a shell because of the quotes inside it. `INPUT FROM
-prompt` reads questions from an interactive terminal (with piped input it
-prints an empty prompt, reads nothing and exits); swap in `INPUT FROM
-"…"` for a fixed one. Any tool-calling model works here; the README's
-`gpt-oss` reasons before answering, which suits a `think` tool.
+prompt` reads questions one line at a time, from an interactive terminal
+or from piped input (`echo "How many words are in: the quick brown fox" |
+chatterlang_script --script word_count.tp`, which warns that its input is
+not a terminal); swap in `INPUT FROM "…"` for a fixed one. Any
+tool-calling model works here; the README's `gpt-oss` reasons before
+answering, which suits a `think` tool.
 
 How a script tool behaves:
 
@@ -498,7 +505,7 @@ chatterlang_script --logger_levels talkpipe_agents:INFO --script '
 ```
 
 ```
-INFO:talkpipe_agents.segments:agent → skills({'skill_name': 'ticket-triage'})
+2026-10-29 12:43:36,024 - INFO:talkpipe_agents.segments:agent → skills({'skill_name': 'ticket-triage'})
 P1: The printer is on fire on the third floor, posing a direct danger to
 people and property.
 ```

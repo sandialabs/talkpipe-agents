@@ -83,8 +83,9 @@ chatterlang_script --load-module my_tools.py --script '
 ```
 
 Tool names in a script are quoted strings (`tools=["lookup_ticket"]`);
-an unquoted `tools=[lookup_ticket]` is read as a variable reference and
-fails with a bare `'lookup_ticket'` error. `INPUT FROM "…"` sends the
+an unquoted `tools=[lookup_ticket]` is read as a constant reference and
+fails with `unknown constant 'lookup_ticket' in tools=`, which says to
+quote it. `INPUT FROM "…"` sends the
 text as one prompt; the longer `INPUT FROM echo[data="…"]` splits its
 data on commas unless `delimiter=` says otherwise, so a question with a
 comma in it would become several.

@@ -551,6 +551,8 @@ class FindingsSession:
     def _describe(self, fid: str) -> str:
         finding = self._findings[fid]
         head = f"[{fid}]" + (f" {finding.label}" if finding.label else "")
+        if finding.source and finding.source != finding.label:
+            head += f" (source: {finding.source})"
         return f"{head}\n{_preview(finding.text, self.max_chars)}"
 
     def _known_summary(self) -> str:
@@ -771,7 +773,12 @@ def parse_judgements(text: str) -> list[Decision]:
             )
         )
     if not decisions:
-        raise ValueError("the judge's reply held no decisions")
+        reply = " ".join(text.split())
+        if not reply:
+            raise ValueError("the judge's reply held no decisions: it was empty")
+        if len(reply) > 120:
+            reply = reply[:119] + "…"
+        raise ValueError(f"the judge's reply held no decisions: {reply!r}")
     return decisions
 
 
@@ -782,6 +789,12 @@ def _label_of(decision_id: str) -> str:
     if label[:1] in ("f", "r") and label[1:].isdigit():
         label = label[1:]
     return f"f{label}" if label.isdigit() else label
+
+
+class _JudgeModelError(ValueError):
+    """The judge's model could not be built (no model configured, an
+    unknown source, a missing provider extra). Unlike a failed model
+    call, this is raised: every judgement would fail the same way."""
 
 
 @register_segment("judgeFindings")
@@ -804,7 +817,8 @@ class FindingsJudge(AbstractSegment):
     (prompt text in, reply text out) replaces the model, and subclasses
     may override :meth:`decide`. When the model fails or leaves a
     finding undecided, the finding is kept with a reason starting
-    ``not judged``; nothing raises. Model calls are taken one at a time.
+    ``not judged``; only a model that cannot be built at all raises
+    (a ``ValueError``). Model calls are taken one at a time.
     """
 
     def __init__(
@@ -876,12 +890,17 @@ class FindingsJudge(AbstractSegment):
         if self._generate is not None:
             return str(self._generate(prompt))
         if self._model is None:
-            self._model = build_agent_model(
-                self.source,
-                self.model,
-                temperature=self.temperature,
-                params=self.model_params,
-            )
+            try:
+                self._model = build_agent_model(
+                    self.source,
+                    self.model,
+                    temperature=self.temperature,
+                    params=self.model_params,
+                )
+            except Exception as exc:
+                # Not a failed judgement: every one would fail the same way,
+                # so keeping everything would hide a configuration error.
+                raise _JudgeModelError(f"judgeFindings: {exc}") from exc
         agent = Agent(
             model=self._model,
             system_prompt=self.system_prompt,
@@ -944,6 +963,8 @@ class FindingsJudge(AbstractSegment):
         prompt = self.prompt(question, looking_for, known, labelled)
         try:
             decisions = self.decide(prompt, labelled)
+        except _JudgeModelError:
+            raise
         except Exception as exc:
             logger.warning("Judging findings failed; keeping them", exc_info=True)
             decisions = {}

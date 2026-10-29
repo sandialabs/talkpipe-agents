@@ -280,8 +280,20 @@ def test_replies_in_json_or_prose_are_both_read(reply):
 
 
 def test_an_unreadable_reply_raises_in_the_parser():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"held no decisions: 'I cannot decide\.'"):
         parse_judgements("I cannot decide.")
+    with pytest.raises(ValueError, match="held no decisions: it was empty"):
+        parse_judgements("  \n")
+
+
+def test_a_judge_whose_model_cannot_be_built_raises():
+    # A configuration error is not a failed judgement: keeping every
+    # finding would hide it.
+    judge = FindingsJudge(source="no_such_source", model="any")
+    with pytest.raises(ValueError, match="unknown agent model source"):
+        judge.judge(NOTES[:2], QUESTION)
+    with pytest.raises(ValueError, match="judgeFindings: unknown agent model"):
+        list(judge([{"question": QUESTION, "findings": ["Paris."]}]))
 
 
 @pytest.mark.parametrize(
@@ -367,7 +379,11 @@ def test_judged_loop_keeps_relevant_findings_and_answers(scripted_model):
     search, enough = scripted_model.tool_results
     assert search.status == "success"
     assert "3 new finding(s) from search_notes: kept 2, ignored 1." in search.text
-    assert "[f1] geography\nParis is the capital of France." in search.text
+    # the source is shown, so the answer can cite it rather than the id
+    assert (
+        "[f1] geography (source: geo.md)\nParis is the capital of France."
+        in search.text
+    )
     assert "[f2] fruit — not relevant" in search.text
     assert "4 of 5 turns left." in search.text
     assert "Noted: 2 finding(s) kept." in enough.text
@@ -504,7 +520,7 @@ def test_findings_without_a_judge_are_decided_by_hand(scripted_model):
     list(step([QUESTION]))
     shown, kept, ignored, unknown, enough = scripted_model.tool_results
     assert "3 finding(s) from search_notes. Decide on each undecided one" in shown.text
-    assert "[f2] fruit\nBananas are yellow." in shown.text
+    assert "[f2] fruit (source: fruit.md)\nBananas are yellow." in shown.text
     assert kept.text.startswith("Keep f1.")
     assert ignored.text.startswith("Ignore f2.")
     assert unknown.text.startswith("Unknown finding id 'f9'")
@@ -530,6 +546,20 @@ def test_findings_as_and_question_field(scripted_model):
     assert out["answer"] == "Paris."
     assert [f.label for f in out["found"].findings] == ["geography"]
     assert judge.prompts[0].startswith(f"Question: {QUESTION}\n")
+
+
+@pytest.mark.parametrize("kwargs", [{"set_as": "answer"}, {"findings_as": "found"}])
+def test_a_plain_item_is_refused_before_the_model_runs(scripted_model, kwargs):
+    # nothing scripted: a model call would fail with "no turn left"
+    with pytest.raises(ValueError, match=f"{next(iter(kwargs))}=.*item is a str"):
+        list(_step(**kwargs)([QUESTION]))
+    assert scripted_model.calls == []
+
+
+def test_findings_as_without_the_loop_still_accepts_plain_items(scripted_model):
+    scripted_model.say("Paris.")
+    step = LLMAgent(source="scripted", model="any", findings_as="found")
+    assert list(step([QUESTION])) == ["Paris."]
 
 
 def test_each_item_gets_a_fresh_session_even_in_one_conversation(scripted_model):

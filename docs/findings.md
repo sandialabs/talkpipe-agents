@@ -31,10 +31,14 @@ tool → findings → judge → session → reply to the model
 Turning it on is one parameter:
 
 ```
-INPUT FROM "What is the capital of France, and since when?"
+INPUT FROM "How tall is the Eiffel Tower, according to my notes?"
 | llmAgent[source="ollama", model="gpt-oss", tools=["search_notes"], judge=True]
 | print
 ```
+
+`search_notes` is a finding tool from the complete example below. Save
+that example as `findings_example.py` and the script runs with
+`chatterlang_script --load-module findings_example.py --script '…'`.
 
 ## A complete example in Python
 
@@ -110,21 +114,25 @@ def fetch_page(url: str, looking_for: str = "") -> Finding:
     return Finding(" ".join(parser.parts)[:3000], label=url, source=url)
 
 
-agent = LLMAgent(
-    source="ollama",
-    model="gpt-oss",
-    tools=["search_notes", "calculate", "fetch_page"],
-    judge=True,
-    progress=print,
-)
-question = "Using my notes, how many times taller is the Eiffel Tower than the Washington Monument?"
-[answer] = agent([question])
-print(answer)
-print(agent.last_outcome.note)
+if __name__ == "__main__":
+    agent = LLMAgent(
+        source="ollama",
+        model="gpt-oss",
+        tools=["search_notes", "calculate", "fetch_page"],
+        judge=True,
+        progress=print,
+    )
+    question = "Using my notes, how many times taller is the Eiffel Tower than the Washington Monument?"
+    [answer] = agent([question])
+    print(answer)
+    print([f.source for f in agent.last_outcome.findings])
 ```
 
-`progress=print` shows the trace as the agent works. A run looks like
-this (abridged):
+Run it with `python findings_example.py`. The `__main__` guard lets
+other code import the file just for its tools: the script above loads
+it with `--load-module`, and the offline test at the end of this page
+imports it. `progress=print` shows the trace as the agent works. A run
+looks like this (abridged):
 
 ```
 agent → search_notes({'looking_for': 'height of Eiffel Tower', 'query': 'Eiffel Tower height'})
@@ -144,7 +152,7 @@ instead, and a 3000-character slice of a page rarely holds the height.
 
 Each kept line is the judge's decision, made inside the loop. The
 countdown runs down with every turn the agent takes, and the last line
-is the run's outcome.
+is the run's outcome, which `agent.last_outcome.note` also holds.
 
 ## Finding tools
 
@@ -211,11 +219,25 @@ from Python.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `judge` | `False` | `True` runs the loop and judges with the agent's own model and source; from Python, a `FindingsJudge` (or `ScriptedJudge`) to judge with instead |
-| `findings` | `False` | runs the loop without a judge: the agent sees every finding with an id and decides itself with `keep_finding` / `ignore_finding` |
+| `findings` | `False` | runs the loop without a judge: the agent sees every finding with an id and decides itself with `keep_finding` / `ignore_finding`. Each of those calls takes a turn, so raise `max_turns` (default 8) for more than a couple of findings. `judge` wins when both are set |
 | `max_kept` | `10` | the most findings one item may keep. This is a backstop, not a goal: past it, relevant findings are passed over and the run is over |
 | `question_field` | — | the property holding the question findings are judged against (default: the prompt) |
-| `findings_as` | — | sets the run's `FindingsOutcome` on the item |
-| `hooks` | — | from Python: more Strands hook providers for every agent |
+| `findings_as` | — | sets the run's `FindingsOutcome` on the item, which must be a dict (see below) |
+| `hooks` | — | from Python: more [Strands hook providers](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/hooks/) for every agent |
+
+The loop, `findings_as` and `hooks` are `llmAgent`'s; `AgentChat` has
+none of them.
+
+`findings_as` (like `set_as`) needs dict items. In chatterlang, turn a
+prompt into one first and name its field:
+
+```
+INPUT FROM "How tall is the Eiffel Tower, according to my notes?"
+| toDict[field_list="_:question"]
+| llmAgent[source="ollama", model="gpt-oss", tools=["search_notes"], judge=True,
+           field="question", set_as="answer", findings_as="outcome"]
+| print
+```
 
 With the loop on, `llmAgent` does four things:
 
@@ -293,21 +315,56 @@ another system with different tools:
   leniently by `parse_judgements`: JSON bare, fenced or in prose, a
   bare list, or one `<id> <keep|ignore> <reason>` line per finding.
   Some models ignore a requested output format, so schema-guided
-  generation alone is not enough. When the model fails, every finding
-  is kept with a `not judged: …` reason; the judge never raises.
+  generation alone is not enough. When the model call fails, or its
+  reply holds no decisions, every finding is kept with a `not judged: …`
+  reason and the run goes on. A model that cannot be built at all (no
+  model configured, an unknown source, a missing provider extra) raises
+  instead, since every judgement would fail the same way.
 - **`judgeFindings`** is the same judge as a segment, for pipelines
   without an agent:
 
   ```
-  | judgeFindings[findings_field="hits", question_field="question", drop_ignored=True]
+  | judgeFindings[source="ollama", model="gpt-oss", findings_field="hits",
+                  question_field="question", drop_ignored=True]
   ```
+
+  Like `llmAgent`, it falls back to the configured default model when
+  `source`/`model` are left out.
 
   It sets `judged` to `{"finding", "keep", "reason"}` dicts, or, with
   `drop_ignored`, to the kept findings only.
 - **`JudgeFindings(session, judge)`** is the Strands hook provider.
   Install it on any Strands `Agent`, together with your finding tools
   and `enough_information`, and the loop runs there. Without a judge,
-  findings are registered and shown undecided.
+  findings are registered and shown undecided. `llmAgent` also tells
+  the model how the loop works, in its system prompt; a bare agent
+  needs the same text, `talkpipe_agents.findings.FINDINGS_PROTOCOL`
+  (`FINDINGS_PROTOCOL_UNJUDGED` without a judge), or it may answer
+  without calling a tool:
+
+  ```python
+  from strands import Agent
+
+  from talkpipe_agents import (
+      FindingsJudge, FindingsSession, JudgeFindings, build_agent_model,
+      enough_information,
+  )
+  from talkpipe_agents.findings import FINDINGS_PROTOCOL
+
+  from findings_example import search_notes
+
+  question = "How tall is the Eiffel Tower, according to my notes?"
+  session = FindingsSession(question, max_kept=5, max_turns=6)
+  agent = Agent(
+      model=build_agent_model("ollama", "gpt-oss"),
+      system_prompt="You are a helpful assistant.\n\n" + FINDINGS_PROTOCOL,
+      tools=[search_notes, enough_information],
+      hooks=[JudgeFindings(session, FindingsJudge(source="ollama", model="gpt-oss"))],
+      callback_handler=None,
+  )
+  print(agent(question))
+  print(session.outcome().note)
+  ```
 
 ## Testing it offline
 
@@ -316,8 +373,11 @@ asking a model. Pair it with the [scripted model](testing.md) and the
 whole loop runs offline:
 
 ```python
+# test_findings_example.py — next to findings_example.py
 from talkpipe_agents import LLMAgent
 from talkpipe_agents.testing import ScriptedJudge
+
+import findings_example  # noqa: F401  (registers search_notes)
 
 
 def test_answers_from_the_kept_note(scripted_model):

@@ -38,6 +38,13 @@ built in:
   (current Ollama serves both, so either source works against its `/v1`).
   A refused connection from either source names the endpoint it tried
   and `OPENAI_BASE_URL`.
+  With a model that reasons (gpt-oss, qwen3, …), both sources, and
+  `litellm`, log a Strands warning on every run, `reasoningContent is
+  not supported in multi-turn conversations with the Chat Completions
+  API` (`... is not yet supported ... with the Responses API`): those
+  providers drop the model's reasoning between turns, which the
+  `ollama` source keeps (below). The answer is unaffected; a model that
+  plans in its reasoning may just take more turns.
   Pointed at OpenAI itself, `openai_chat` fails for reasoning models with
   `Function tools with reasoning_effort are not supported for <model> in
   /v1/chat/completions` unless `model_params` turns reasoning off

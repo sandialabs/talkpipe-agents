@@ -30,12 +30,23 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `JudgeFindings` Strands hook, and a lenient `parse_judgements` that
   reads JSON, fenced JSON or prose decisions.
   `talkpipe_agents.testing.ScriptedJudge` decides by label, so the
-  whole loop can be tested offline.
+  whole loop can be tested offline. A judge keeps every finding when
+  its model call fails or its reply holds no decisions (the error
+  quotes the start of that reply), but raises when its model cannot be
+  built at all (no model configured, an unknown source, a missing
+  provider extra), since every judgement would fail the same way. The
+  agent is shown each finding's source next to its label when the two
+  differ, so it has the source to cite.
 - `hooks` on `llmAgent`: more Strands hook providers to install on
   every agent it builds.
 
 ### Fixed
 
+- `llmAgent` with `set_as` (or, with the findings loop on,
+  `findings_as`) given a plain string item now stops before the model
+  runs, with an error saying the items must be dicts and how to make
+  them in chatterlang. It used to run the agent and then fail with
+  `'str' object has no attribute ...`.
 - Ollama models that reason between tool calls no longer forget their
   plan every turn. Strands' Ollama provider discarded the model's
   `thinking`, so a model such as minimax-m3.1-flash that decides in its
@@ -60,6 +71,21 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `qwen3`. The findings loop example asks about "my notes" so the
   agent searches them first, and the `search_files` example asks
   about the car registration, a phrase the file contains.
+- The findings loop page's examples run as written: the complete
+  example keeps its agent run under a `__main__` guard, so the opening
+  chatterlang script (via `--load-module`) and the offline test (which
+  now imports it) can use its `search_notes`; the `judgeFindings`
+  snippet names its model. The page also shows a dict item with
+  `findings_as`, a bare Strands agent with `JudgeFindings` and the
+  `FINDINGS_PROTOCOL` system prompt it needs, which of `judge` and
+  `findings` wins when both are set, that `findings=True` spends a
+  turn per decision, and that the loop and `hooks` are `llmAgent`-only.
+- Smaller corrections: the unquoted-tool-name error quoted in Getting
+  started is the current one; the tools page shows the progress lines
+  with their timestamp, says `INPUT FROM prompt` reads piped input
+  too, and names the findings loop's three registered session tools;
+  the providers page explains the `reasoningContent` warning the
+  OpenAI and LiteLLM sources log for reasoning models.
 
 ## 0.1.1 (2026-10-23)
 

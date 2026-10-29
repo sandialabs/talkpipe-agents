@@ -296,8 +296,25 @@ class LLMAgent(AbstractSegment):
             assign_property(item, self.findings_as, self.last_outcome)
         return answer
 
+    def _check_assignable(self, item: Any) -> None:
+        # Fail before the model runs, not after: a plain value has nowhere
+        # to put set_as / findings_as.
+        if not isinstance(item, (str, bytes, int, float, tuple)) and item is not None:
+            return
+        for name in ("set_as", "findings_as"):
+            value = getattr(self, name)
+            # findings_as is only used with the findings loop on
+            if value and (name == "set_as" or self._loop is not None):
+                raise ValueError(
+                    f"llmAgent: {name}={value!r} sets a property on the item, "
+                    f"but the item is a {type(item).__name__}; pass dict items "
+                    '(in chatterlang, e.g. toDict[field_list="_:question"] '
+                    'before llmAgent[field="question", ...])'
+                )
+
     def transform(self, input_iter: Iterable) -> Iterator:
         for item in input_iter:
+            self._check_assignable(item)
             prompt = self._prompt_of(item)
             if self.multi_turn:
                 self._agent = self._agent or self._make_agent()
