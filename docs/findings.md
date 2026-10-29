@@ -32,7 +32,7 @@ Turning it on is one parameter:
 
 ```
 INPUT FROM "What is the capital of France, and since when?"
-| llmAgent[source="ollama", model="qwen3", tools=["search_notes"], judge=True]
+| llmAgent[source="ollama", model="gpt-oss", tools=["search_notes"], judge=True]
 | print
 ```
 
@@ -112,12 +112,13 @@ def fetch_page(url: str, looking_for: str = "") -> Finding:
 
 agent = LLMAgent(
     source="ollama",
-    model="qwen3",
+    model="gpt-oss",
     tools=["search_notes", "calculate", "fetch_page"],
     judge=True,
     progress=print,
 )
-[answer] = agent(["How many times taller is the Eiffel Tower than the Washington Monument?"])
+question = "Using my notes, how many times taller is the Eiffel Tower than the Washington Monument?"
+[answer] = agent([question])
 print(answer)
 print(agent.last_outcome.note)
 ```
@@ -126,16 +127,20 @@ print(agent.last_outcome.note)
 this (abridged):
 
 ```
-agent → search_notes({'query': 'Eiffel Tower height'})
-agent → search_notes({'query': 'Washington Monument height'})
-agent · keep f1 (washington.md) — Provides the Washington Monument's height (169 metres) … Kept 1 finding(s), at most 10. 7 of 8 turns left.
+agent → search_notes({'looking_for': 'height of Eiffel Tower', 'query': 'Eiffel Tower height'})
+agent · keep f1 (eiffel.md) — Provides the height of the Eiffel Tower (330 m) … Kept 1 finding(s), at most 10. 7 of 8 turns left.
 agent ← search_notes: 1 finding(s), kept 1, ignored 0. Kept 1 finding(s), at most 10. 7 of 8 turns left.
-agent · keep f2 (eiffel.md) — Provides the Eiffel Tower's height (330 metres) … Kept 2 finding(s), at most 10. 7 of 8 turns left.
-agent → calculate({'expression': '330 / 169', 'looking_for': "The ratio of the two heights"})
-agent · keep f3 (calculate) — Calculates the height ratio as 330 ÷ 169 ≈ 1.953 … 6 of 8 turns left.
-agent → enough_information({'reason': 'Both heights and the ratio are established'})
-Agent judged it had enough to answer (Both heights and the ratio are established): kept 3 findings after 3 calls, ignored 0.
+agent → search_notes({'looking_for': 'height of Washington Monument', 'query': 'Washington Monument height'})
+agent · keep f2 (washington.md) — Provides the height of the Washington Monument (169 m) … Kept 2 finding(s), at most 10. 6 of 8 turns left.
+agent → calculate({'expression': '330 / 169', 'looking_for': 'ratio of Eiffel Tower height to Washington Monument height'})
+agent · keep f3 (calculate) — Provides the computed ratio of 1.953 … Kept 3 finding(s), at most 10. 5 of 8 turns left.
+agent → enough_information({'reason': 'The kept findings provide both heights and the calculated ratio, enough to answer the question.'})
+Agent judged it had enough to answer (The kept findings provide both heights and the calculated ratio, enough to answer the question): kept 3 findings after 3 calls, ignored 0.
 ```
+
+The question says "my notes" so the agent starts with `search_notes`.
+Asked without it, gpt-oss sometimes reads Wikipedia with `fetch_page`
+instead, and a 3000-character slice of a page rarely holds the height.
 
 Each kept line is the judge's decision, made inside the loop. The
 countdown runs down with every turn the agent takes, and the last line
@@ -188,7 +193,7 @@ findingTool[name="read_page",
             input_description="The https:// URL of the page to read.",
             script="| downloadURL | htmlToText | splitText[criteria=1500]"];
 INPUT FROM "According to https://www.iana.org/help/example-domains what are example.com and example.net for?"
-| llmAgent[source="ollama", model="qwen3",
+| llmAgent[source="ollama", model="gpt-oss",
            tools=["read_page", "enough_information"], judge=True]
 | print
 ```
@@ -258,7 +263,7 @@ answer = (
     ConstructRAGPrompt(prompt_directive="Answer the question.",
                        background_field="background", content_field="question",
                        set_as="prompt")
-    | LLMPrompt(source="ollama", model="qwen3", field="prompt", set_as="partial")
+    | LLMPrompt(source="ollama", model="gpt-oss", field="prompt", set_as="partial")
     | AppendRAGSources(partial_answer_field="partial", set_as="answer")
 ).as_function(single_in=True, single_out=True)
 
