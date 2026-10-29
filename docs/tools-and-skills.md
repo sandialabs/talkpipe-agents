@@ -437,6 +437,11 @@ From Python, the same thing is one call,
 `register_agent_tool(make_script_tool(name, description, script))`, both
 imported from `talkpipe_agents`.
 
+`findingTool` takes the same parameters but treats each item the script
+emits as a *finding*. With `llmAgent[judge=True]`, the agent judges
+those findings and accumulates them; see
+[The findings loop](findings.md).
+
 The placement story from the README carries over: the tool's body is
 deterministic, reviewable dataflow sitting next to the pipeline that
 grants it, and the agent's license is exactly the set of scripts you

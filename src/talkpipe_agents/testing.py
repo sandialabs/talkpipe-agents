@@ -31,6 +31,17 @@ scripted call came back with, so a test proves the real tool ran;
 ``prompts`` the full messages, for asserting on what the agent
 actually sent; ``remaining`` is the script not yet played.
 
+A findings loop (``llmAgent[judge=True]``) needs its judge scripted too:
+``ScriptedJudge`` decides by label, without a model, and is passed as
+``judge=`` from Python::
+
+    step = LLMAgent(
+        source="scripted",
+        model="any",
+        tools=["search_notes"],
+        judge=ScriptedJudge(keep={"Paris guide"}),
+    )
+
 Two mistakes a test author makes are caught rather than masked by the
 scripted answer that follows: a scripted call to a tool the agent was
 not given fails the turn outright, and a call the agent reports back as
@@ -44,7 +55,7 @@ from __future__ import annotations
 import json
 import warnings
 from collections import deque
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any, Literal, NamedTuple
 
@@ -54,6 +65,7 @@ from strands.types.streaming import StreamEvent
 from strands.types.tools import ToolChoice, ToolSpec
 
 from . import models
+from .findings import Decision, Finding, FindingsJudge
 
 TextTurn = tuple[Literal["text"], str]
 ToolTurn = tuple[Literal["tool"], str, dict[str, Any]]
@@ -257,7 +269,52 @@ def scripted_source(
             models._factories[name] = previous
 
 
+class ScriptedJudge(FindingsJudge):
+    """A :class:`~talkpipe_agents.findings.FindingsJudge` that decides by
+    rule instead of asking a model, so a findings loop runs offline.
+
+    *keep* is either the labels of the findings to keep (every other
+    one is ignored) or a callable given each :class:`Finding` and
+    returning ``True``/``False``, or ``(keep, reason)``. *error*, when
+    set, is raised in place of every decision, to test the judge
+    failing (which keeps every finding as "not judged"). ``batches``
+    records the labels of the findings each judgement was shown and
+    ``prompts`` the prompt it would have sent.
+    """
+
+    def __init__(
+        self,
+        keep: Iterable[str] | Callable[[Finding], bool | tuple[bool, str]] = (),
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        super().__init__()
+        self._rule = keep if callable(keep) else frozenset(keep)
+        self._error = error
+        self.batches: list[list[str]] = []
+        self.prompts: list[str] = []
+
+    def decide(
+        self, prompt: str, labelled: list[tuple[str, Finding]]
+    ) -> dict[str, Decision]:
+        self.prompts.append(prompt)
+        self.batches.append([finding.label for _, finding in labelled])
+        if self._error is not None:
+            raise self._error
+        decisions = {}
+        for label, finding in labelled:
+            if callable(self._rule):
+                verdict = self._rule(finding)
+                keep, reason = verdict if isinstance(verdict, tuple) else (verdict, "")
+            else:
+                keep, reason = finding.label in self._rule, ""
+            reason = reason or ("relevant" if keep else "not relevant")
+            decisions[label] = Decision(label, bool(keep), reason)
+        return decisions
+
+
 __all__ = [
+    "ScriptedJudge",
     "ScriptedModel",
     "ScriptedToolErrorWarning",
     "ToolResult",

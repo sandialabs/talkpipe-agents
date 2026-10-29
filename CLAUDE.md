@@ -14,14 +14,19 @@ design ("Putting Agents in their Place").
   provider, replaying `thinking` and threading turns),
   `tools.py` (name→tool registry + `ask_user`/`think`),
   `script_tools.py` (chatterlang scripts as tools: `make_script_tool`
-  + the `scriptTool` segment), `common_tools.py` (the generic tool
+  + the `scriptTool` segment; `make_finding_tool` + `findingTool`),
+  `findings.py` (the findings loop: `Finding`, `finding_tool`,
+  `FindingsSession`, the `FindingsJudge`/`judgeFindings` segment, the
+  `JudgeFindings` hook, the `enough_information`/`keep_finding`/
+  `ignore_finding` session tools; on with `llmAgent[judge=True]`), `common_tools.py` (the generic tool
   suite: calculator, time/date, regex, read-only files, `fetch_url`,
   notepad, kept in the agent's Strands state), `hooks.py`
   (`AgentHooks`: progress lines + leak scrubbing as Strands stores
   messages), `replies.py` (`ask_and_clean` under Strands `limits`, with
   the empty-reply retry), `support.py` (`teller`, `strip_think`,
   `strip_tool_leak`), `testing.py` (`ScriptedModel` + `scripted_source`,
-  the public offline model; `_pytest_plugin.py` exposes it as the
+  the public offline model, and `ScriptedJudge`, the offline findings
+  judge; `_pytest_plugin.py` exposes the model as the
   `scripted_model` fixture through the `pytest11` entry point).
 - `tests/` — pytest, fully offline (the package's own `scripted_model`
   fixture; no live model server, no network). Keep it that way.

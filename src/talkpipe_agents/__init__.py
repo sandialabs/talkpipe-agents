@@ -22,6 +22,14 @@ directly for Python composition.
   (calculator, time and date, text extraction, read-only file access,
   URL fetching, a notepad kept in the agent's Strands state), all
   registered by name.
+- ``findings`` — the findings loop: ``Finding``, ``finding_tool``,
+  ``FindingsSession`` (one question's kept/ignored findings, stop rule,
+  turn countdown), the ``FindingsJudge`` (also the ``judgeFindings``
+  segment) and the ``JudgeFindings`` hook that judges every finding
+  tool's results inside the agent loop, plus the ``enough_information``
+  / ``keep_finding`` / ``ignore_finding`` session tools; turned on with
+  ``llmAgent[judge=True]``. ``findingTool`` (in ``script_tools``) makes
+  a chatterlang script a finding tool.
 - ``segments`` — the ``llmAgent`` chatterlang segment.
 - ``chat`` — ``AgentChat``, a thin multi-turn wrapper for interactive
   sessions (what a chat UI drives).
@@ -59,6 +67,20 @@ from .common_tools import (
     summarize_notes,
     update_note,
 )
+from .findings import (
+    Finding,
+    FindingsJudge,
+    FindingsOutcome,
+    FindingsSession,
+    JudgeFindings,
+    Judgement,
+    as_findings,
+    enough_information,
+    finding_tool,
+    ignore_finding,
+    keep_finding,
+    parse_judgements,
+)
 from .hooks import AgentHooks
 from .models import agent_model_sources, build_agent_model, register_agent_model
 from .replies import agent_limits, ask_and_clean
@@ -67,7 +89,7 @@ try:
     __version__ = _version("talkpipe-agents")
 except _PackageNotFoundError:  # pragma: no cover - only when run from an unbuilt tree
     __version__ = "0.0.0+unknown"
-from .script_tools import ScriptTool, make_script_tool
+from .script_tools import FindingTool, ScriptTool, make_finding_tool, make_script_tool
 from .segments import LLMAgent
 from .support import strip_think, strip_tool_leak, teller
 from .tools import (
@@ -82,6 +104,13 @@ from .tools import (
 __all__ = [
     "AgentChat",
     "AgentHooks",
+    "Finding",
+    "FindingTool",
+    "FindingsJudge",
+    "FindingsOutcome",
+    "FindingsSession",
+    "JudgeFindings",
+    "Judgement",
     "LLMAgent",
     "ScriptTool",
     "UnknownAgentToolError",
@@ -89,6 +118,7 @@ __all__ = [
     "agent_limits",
     "agent_model_sources",
     "agent_tool_names",
+    "as_findings",
     "ask_and_clean",
     "build_agent_model",
     "calculator",
@@ -96,10 +126,16 @@ __all__ = [
     "current_time",
     "days_between",
     "delete_note",
+    "enough_information",
     "fetch_url",
+    "finding_tool",
+    "ignore_finding",
+    "keep_finding",
     "list_files",
     "make_ask_user",
+    "make_finding_tool",
     "make_script_tool",
+    "parse_judgements",
     "read_file",
     "read_notes",
     "regex_extract",

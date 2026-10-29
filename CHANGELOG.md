@@ -5,6 +5,35 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- The findings loop, for agents that gather information before
+  answering. A *finding tool* (`@finding_tool` in Python, or the
+  `findingTool` chatterlang segment, which turns a script into one)
+  returns findings: `Finding` objects, strings, dicts or search
+  results. With `llmAgent[judge=True]`, each item gets a
+  `FindingsSession` for its question. The agent's own model judges
+  every finding tool call's results in one batched call before the
+  agent sees them, against the question, the call's `looking_for`
+  and what is already known. Relevant findings are kept and the rest
+  ignored. The agent then reads the kept findings in full, the
+  ignored ones with reasons, and a turn countdown. It stops by
+  calling `enough_information`, which is refused while nothing is
+  kept, and answers from what it kept. The run's `FindingsOutcome`
+  (kept findings, how the run ended, the trace) is `last_outcome`,
+  or set on the item with `findings_as`. `findings=True` runs the
+  session without a judge, and the agent decides with `keep_finding`
+  and `ignore_finding`. `max_kept` caps how many findings a run
+  keeps, and `question_field` sets the question findings are judged
+  against. The parts also work on their own: `FindingsSession`, the
+  `FindingsJudge` (also the `judgeFindings` segment), the
+  `JudgeFindings` Strands hook, and a lenient `parse_judgements` that
+  reads JSON, fenced JSON or prose decisions.
+  `talkpipe_agents.testing.ScriptedJudge` decides by label, so the
+  whole loop can be tested offline.
+- `hooks` on `llmAgent`: more Strands hook providers to install on
+  every agent it builds.
+
 ### Fixed
 
 - Ollama models that reason between tool calls no longer forget their

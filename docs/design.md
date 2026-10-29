@@ -15,12 +15,13 @@ The package is small and each module has one role:
 | `models.py`   | source/model string resolution → Strands `Model` objects, via a pluggable `register_agent_model` registry |
 | `ollama_model.py` | `ThinkingOllamaModel` — Strands' `OllamaModel` for the `ollama` source, keeping a thinking model's reasoning between turns and sending each turn back as one message with named tool results |
 | `tools.py`    | a name → tool registry (`register_agent_tool`) so scripts can reference tools by name, plus the generic `ask_user` and `think` tools |
-| `script_tools.py` | chatterlang scripts as tools — `make_script_tool` and the `scriptTool` segment, so a script can define documented tooling scripts inline |
+| `script_tools.py` | chatterlang scripts as tools — `make_script_tool` and the `scriptTool` segment, so a script can define documented tooling scripts inline; `make_finding_tool` and `findingTool` for finding tools |
 | `common_tools.py` | a suite of generally useful, bounded tools registered by name — see [Tools and skills](tools-and-skills.md) |
+| `findings.py` | the findings loop — `Finding`, `finding_tool`, `FindingsSession`, the `FindingsJudge` (also the `judgeFindings` segment), the `JudgeFindings` hook that judges a finding tool's results before the model sees them, and the `enough_information` / `keep_finding` / `ignore_finding` session tools — see [The findings loop](findings.md) |
 | `hooks.py`    | `AgentHooks` — the Strands hook provider both entry points install: per-tool-call progress lines, and scrubbing of leaked tool-call syntax as Strands stores each message |
 | `replies.py`  | `ask_and_clean` — one prompt under a Strands `limits` budget, with the empty-reply retry — and `agent_limits` |
 | `support.py`  | the shared one-line-progress convention (`teller`) and reply cleanup primitives (`strip_think`, `strip_tool_leak`) |
-| `testing.py`  | `ScriptedModel` and `scripted_source` — a Strands `Model` that replays scripted tool calls and answers and records what each tool call returned (`tool_results`), so applications test their agent wiring offline; the `scripted_model` pytest fixture is installed as a plugin |
+| `testing.py`  | `ScriptedModel` and `scripted_source` — a Strands `Model` that replays scripted tool calls and answers and records what each tool call returned (`tool_results`), so applications test their agent wiring offline; the `scripted_model` pytest fixture is installed as a plugin; `ScriptedJudge`, a findings judge that decides by label |
 
 Two registries make the layer generic rather than bound to any one
 provider or application: the model registry, described under

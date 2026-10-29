@@ -27,6 +27,15 @@ soft token budgets ``max_output_tokens`` and ``max_total_tokens``.
 The Strands ``AgentResult`` of the most recent item is kept as
 ``last_result`` (its ``stop_reason`` tells a capped run from one the
 agent ended itself).
+
+With ``judge=True`` the step runs the findings loop (see ``findings``):
+each item gets a ``FindingsSession`` for its question, every finding
+tool's results are judged by the same model before the agent sees them,
+and the agent stops by calling ``enough_information``; ``findings=True``
+runs the session without a judge, the agent keeping and ignoring by
+hand. The run's ``FindingsOutcome`` (kept findings, how it ended, the
+trace) is kept as ``last_outcome`` and, with ``findings_as``, set on
+the item.
 """
 
 from __future__ import annotations
@@ -41,6 +50,14 @@ from talkpipe.chatterlang.registry import register_segment
 from talkpipe.pipe.core import AbstractSegment
 from talkpipe.util.data_manipulation import assign_property, extract_property
 
+from .findings import (
+    DEFAULT_MAX_KEPT,
+    FINDINGS_PROTOCOL,
+    FINDINGS_PROTOCOL_UNJUDGED,
+    FindingsJudge,
+    FindingsSession,
+    JudgeFindings,
+)
 from .hooks import AgentHooks, AgentRetryStrategy
 from .models import build_agent_model
 from .models import model_params as parse_model_params
@@ -122,6 +139,34 @@ class LLMAgent(AbstractSegment):
             "Callable given each one-line progress message (agent → tool(args), "
             "tool errors, limits); default: this module's logger at INFO",
         ] = None,
+        judge: Annotated[
+            bool | FindingsJudge,
+            "Run the findings loop: judge every finding tool's results with "
+            "the agent's model and accumulate them per item (from Python, a "
+            "FindingsJudge to judge with instead)",
+        ] = False,
+        findings: Annotated[
+            bool,
+            "Run the findings loop without a judge: the agent keeps and "
+            "ignores findings itself (keep_finding, ignore_finding)",
+        ] = False,
+        max_kept: Annotated[
+            int, "With judge or findings: the most findings one item may keep"
+        ] = DEFAULT_MAX_KEPT,
+        question_field: Annotated[
+            str | None,
+            "With judge or findings: property of the item holding the question "
+            "findings are judged against (default: the prompt)",
+        ] = None,
+        findings_as: Annotated[
+            str | None,
+            "With judge or findings: set the run's FindingsOutcome (kept "
+            "findings, how the run ended, the trace) as this property of the item",
+        ] = None,
+        hooks: Annotated[
+            list | None,
+            "From Python: more Strands hook providers for every agent",
+        ] = None,
     ) -> None:
         super().__init__()
         self.model = model
@@ -139,10 +184,43 @@ class LLMAgent(AbstractSegment):
         self.model_params = parse_model_params(model_params)
         self.field = field
         self.set_as = set_as
-        self.tell = teller(progress, logger)
+        self._progress = teller(progress, logger)
         self.state = AgentState()
         self.last_result: Any = None
         self._agent: Agent | None = None
+        self.hooks = list(hooks or [])
+        self.max_kept = max_kept
+        self.question_field = question_field
+        self.findings_as = findings_as
+        self.last_outcome: Any = None
+        self._session: FindingsSession | None = None
+        self._loop: JudgeFindings | None = None
+        if judge is not False or findings:
+            if judge is True:
+                judge = FindingsJudge(
+                    model=model,
+                    source=source,
+                    temperature=temperature,
+                    model_params=self.model_params,
+                )
+            self._loop = JudgeFindings(judge=judge or None)
+            self.system_prompt += "\n\n" + (
+                FINDINGS_PROTOCOL if self._loop.judge else FINDINGS_PROTOCOL_UNJUDGED
+            )
+            # The session tools the protocol names, unless already given.
+            names = {getattr(t, "tool_name", None) for t in self.tools}
+            wanted = ["enough_information"]
+            if self._loop.judge is None:
+                wanted += ["keep_finding", "ignore_finding"]
+            self.tools += resolve_agent_tools([n for n in wanted if n not in names])
+
+    def tell(self, message: str) -> None:
+        """Report *message*: to the running findings session's trace as
+        well, when there is one."""
+        if self._session is not None:
+            self._session.tell(message)
+        else:
+            self._progress(message)
 
     def _make_agent(self) -> Agent:
         for plugin in self.skills:
@@ -162,7 +240,11 @@ class LLMAgent(AbstractSegment):
             system_prompt=self.system_prompt,
             # the default handler prints to stdout — never in a pipeline
             callback_handler=None,
-            hooks=[AgentHooks(self.tell)],
+            hooks=[
+                AgentHooks(self.tell),
+                *([self._loop] if self._loop else []),
+                *self.hooks,
+            ],
             retry_strategy=AgentRetryStrategy(),
             state=self.state,
         )
@@ -186,6 +268,34 @@ class LLMAgent(AbstractSegment):
                 f"({type(item).__name__}); is the property name right?"
             ) from exc
 
+    def _ask_with_findings(
+        self, loop: JudgeFindings, agent: Agent, prompt: str, item: Any
+    ) -> str:
+        """Ask *prompt* with a fresh findings session for this item."""
+        question = prompt
+        if self.question_field:
+            question = extract_property(item, self.question_field, fail_on_missing=True)
+        session = self._session = loop.session = FindingsSession(
+            str(question),
+            max_kept=self.max_kept,
+            # The segment's own cap, so the countdown matches the limit.
+            max_turns=self.max_turns,
+            tell=self._progress,
+        )
+        try:
+            answer = self._ask(agent, prompt)
+        except Exception as exc:
+            self.last_outcome = session.outcome(error=str(exc) or repr(exc))
+            raise
+        else:
+            stop_reason = str(getattr(self.last_result, "stop_reason", ""))
+            self.last_outcome = session.outcome(stop_reason)
+        finally:
+            self._session = loop.session = None
+        if self.findings_as:
+            assign_property(item, self.findings_as, self.last_outcome)
+        return answer
+
     def transform(self, input_iter: Iterable) -> Iterator:
         for item in input_iter:
             prompt = self._prompt_of(item)
@@ -194,7 +304,10 @@ class LLMAgent(AbstractSegment):
                 agent = self._agent
             else:
                 agent = self._make_agent()
-            answer = self._ask(agent, str(prompt))
+            if self._loop is not None:
+                answer = self._ask_with_findings(self._loop, agent, str(prompt), item)
+            else:
+                answer = self._ask(agent, str(prompt))
             if self.set_as:
                 assign_property(item, self.set_as, answer)
                 yield item

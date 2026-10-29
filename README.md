@@ -143,6 +143,12 @@ writes it to `chatterlang_ref.html`/`chatterlang_ref.txt`, and
 - [Tools and skills](docs/tools-and-skills.md) — the tool registry, the shipped tools
   (ask_user, think, calculator, files, web, notepad, …) with a working
   example of each, chatterlang scripts as tools, and agent skills folders.
+- [The findings loop](docs/findings.md) — `llmAgent[judge=True]`:
+  finding tools (Python `@finding_tool` or chatterlang `findingTool`)
+  whose results are judged inside the agent loop and accumulated per
+  question, with `enough_information` as the stop and a turn countdown
+  in every reply; the session, judge and hook on their own; testing it
+  offline with `ScriptedJudge`.
 - [Design](docs/design.md) — how the package is structured, the reply
   hygiene both entry points share, where Strands fits, and where the
   layer came from.
