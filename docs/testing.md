@@ -64,7 +64,7 @@ import my_tools  # noqa: F401  (registers lookup_ticket)
 
 SCRIPT = """
   INPUT FROM "How urgent is ticket T-1?"
-  | llmAgent[source="ollama", model="llama3.2", tools=["lookup_ticket"]]
+  | llmAgent[source="ollama", model="gpt-oss", tools=["lookup_ticket"]]
 """  # or read it from the file your application ships
 
 

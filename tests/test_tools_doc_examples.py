@@ -138,11 +138,11 @@ EXAMPLES: dict[tuple[str, ...], Example] = {
         [
             Call(
                 "search_files",
-                {"pattern": "deadline|before the", "directory": "."},
+                {"pattern": "car registration", "directory": "."},
                 ["notes.txt:2: Renew the car registration before the 30th."],
             )
         ],
-        "notes.txt mentions the car registration deadline.",
+        "notes.txt mentions the car registration.",
     ),
     ("fetch_url",): Example(
         [Call("fetch_url", {"url": "https://example.com/"}, ["Example Domain"])],

@@ -279,7 +279,8 @@ def list_files(directory: str | None = ".", pattern: str | None = "*") -> str:
     with a trailing "/", files with their size in bytes.
 
     Args:
-        directory: The directory to list ("~" is expanded).
+        directory: The directory to list: "." (the default) is the current
+            directory; "~" is expanded.
         pattern: Glob pattern to filter entries, e.g. "*.py".
     """
     directory, pattern = directory or ".", pattern or "*"
@@ -314,7 +315,8 @@ def search_files(
 
     Args:
         pattern: A Python regular expression to search for.
-        directory: The directory to search under ("~" is expanded).
+        directory: The directory to search under: "." (the default) is the
+            current directory; "~" is expanded.
         file_glob: Glob pattern for which files to search, e.g. "*.md".
         max_matches: Stop after this many matching lines.
     """

@@ -11,7 +11,7 @@ available to the agent unless the script names it.
 
 ```
 INPUT FROM "How many days until 2027-01-01?"
-| llmAgent[source="ollama", model="llama3.2",
+| llmAgent[source="ollama", model="gpt-oss",
            tools=["current_time", "days_between"], skills="./skills"]
 | print
 ```
@@ -23,7 +23,7 @@ happens when a tool pauses for a human, chatterlang
 [scripts as tools](#scripts-as-tools), and [skills](#skills) — with a
 complete skill to save and run.
 
-The examples run against a local Ollama with `llama3.2` pulled, as the
+The examples run against a local Ollama with `gpt-oss` pulled, as the
 README's do; any other provider works by changing `source=` and `model=`
 (see [Model providers](model-providers.md)).
 
@@ -69,16 +69,15 @@ compiles, and `--logger_levels` shows each tool call as it happens:
 chatterlang_script --logger_levels talkpipe_agents:INFO \
   --load-module support_tools.py --script '
   INPUT FROM "What is ticket T-1 about, and is it still open?"
-  | llmAgent[source="ollama", model="llama3.2",
+  | llmAgent[source="ollama", model="gpt-oss",
              tools=["lookup_ticket", "list_open_tickets"]]
   | print'
 ```
 
 ```
 INFO:talkpipe_agents.segments:agent → lookup_ticket({'ticket_id': 'T-1'})
-The ticket T-1 is about a printer on fire that occurred on the third floor.
-Unfortunately, the ticket is still open, indicating that the issue has not
-been resolved yet.
+Ticket **T‑1** is about a **printer on fire on the third floor**.
+It is still marked as **open**.
 ```
 
 The agent was given both tools and chose the one the question needed.
@@ -177,7 +176,7 @@ the agent-facing bounds above.
 | `update_note` / `delete_note` / `clear_notes` | revise or expunge memory: replace a note in place, delete one (numbers stay stable), or wipe the pad |
 
 Each tool below comes with a complete script that runs as shown with
-the README's model (`ollama pull llama3.2`): nothing to install, write
+the README's model (`ollama pull gpt-oss`): nothing to install, write
 or register first. Save a script to a file and run it with
 `chatterlang_script --script FILE` (the quotes inside rule out passing
 it inline in a shell). The call and reply given with each example are
@@ -192,7 +191,7 @@ shown, so the replies quoted here are the tools' actual output.
 
 ```
 INPUT FROM "Book the meeting room for my next review."
-| llmAgent[source="ollama", model="llama3.2", tools=["ask_user"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["ask_user"]]
 | print
 ```
 
@@ -220,7 +219,7 @@ once.
 
 ```
 INPUT FROM "Is 1001 prime? Think it through before you answer."
-| llmAgent[source="ollama", model="llama3.2", tools=["think"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["think"]]
 | print
 ```
 
@@ -234,7 +233,7 @@ model does not have to do sums itself.
 
 ```
 INPUT FROM "What is 17 * 23 + 5?"
-| llmAgent[source="ollama", model="llama3.2", tools=["calculator"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["calculator"]]
 | print
 ```
 
@@ -248,7 +247,7 @@ timezone or a named IANA one.
 
 ```
 INPUT FROM "What day of the week is it in Tokyo right now?"
-| llmAgent[source="ollama", model="llama3.2", tools=["current_time"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["current_time"]]
 | print
 ```
 
@@ -261,7 +260,7 @@ negative when the end comes first.
 
 ```
 INPUT FROM "How many days are there from 2026-01-31 to 2026-03-01?"
-| llmAgent[source="ollama", model="llama3.2", tools=["days_between"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["days_between"]]
 | print
 ```
 
@@ -275,7 +274,7 @@ text, one per line (capture groups tab-separated).
 
 ```
 INPUT FROM "Pull the email addresses out of: contact ann@example.com or bob@example.org"
-| llmAgent[source="ollama", model="llama3.2", tools=["regex_extract"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["regex_extract"]]
 | print
 ```
 
@@ -295,7 +294,7 @@ notice when long.
 
 ```
 INPUT FROM "Summarize notes.txt in one line."
-| llmAgent[source="ollama", model="llama3.2", tools=["read_file"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["read_file"]]
 | print
 ```
 
@@ -307,7 +306,7 @@ file's size and a trailing `/` on subdirectories.
 
 ```
 INPUT FROM "What files are in the current directory?"
-| llmAgent[source="ollama", model="llama3.2", tools=["list_files"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["list_files"]]
 | print
 ```
 
@@ -318,12 +317,12 @@ entry, `notes.txt` with its size in bytes among them.
 expression and returns the matching lines as `path:line: text`.
 
 ```
-INPUT FROM "Which files here mention a deadline?"
-| llmAgent[source="ollama", model="llama3.2", tools=["search_files"]]
+INPUT FROM "Which files here mention the car registration?"
+| llmAgent[source="ollama", model="gpt-oss", tools=["search_files"]]
 | print
 ```
 
-The model calls `search_files(pattern="deadline|before the",
+The model calls `search_files(pattern="car registration",
 directory=".")` and is told the matching lines, such as
 `notes.txt:2: Renew the car registration before the 30th.`
 
@@ -335,7 +334,7 @@ else.
 
 ```
 INPUT FROM "What does https://example.com/ say?"
-| llmAgent[source="ollama", model="llama3.2", tools=["fetch_url"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["fetch_url"]]
 | print
 ```
 
@@ -350,7 +349,7 @@ and the numbers stay stable: deleting a note never renumbers the rest.
 
 ```
 INPUT FROM "Plan a two-day visit to Lisbon. Keep notes as you go, tidy them up, and finish with the plan."
-| llmAgent[source="ollama", model="llama3.2",
+| llmAgent[source="ollama", model="gpt-oss",
            tools=["save_note", "read_notes", "summarize_notes",
                   "update_note", "delete_note", "clear_notes"]]
 | print
@@ -402,7 +401,7 @@ scriptTool[
     script="| lambda[expression='len(item.split())']"];
 
 INPUT FROM prompt
-| llmAgent[source="ollama", model="qwen3", tools=["word_count", "think"]]
+| llmAgent[source="ollama", model="gpt-oss", tools=["word_count", "think"]]
 | print
 ```
 
@@ -412,10 +411,8 @@ as well as inline script text, and a script like this one cannot be
 passed inline in a shell because of the quotes inside it. `INPUT FROM
 prompt` reads questions from an interactive terminal (with piped input it
 prints an empty prompt, reads nothing and exits); swap in `INPUT FROM
-"…"` for a fixed one. Any tool-calling model works here; `qwen3`
-(`ollama pull qwen3`) is shown because it reasons before answering,
-which suits a `think` tool, at the cost of a slower reply than the
-README's `llama3.2`.
+"…"` for a fixed one. Any tool-calling model works here; the README's
+`gpt-oss` reasons before answering, which suits a `think` tool.
 
 How a script tool behaves:
 
@@ -496,14 +493,14 @@ Nothing else is needed. Run it, from the directory containing `skills/`:
 ```bash
 chatterlang_script --logger_levels talkpipe_agents:INFO --script '
   INPUT FROM "How urgent is this ticket: Printer on fire, third floor"
-  | llmAgent[source="ollama", model="llama3.2", skills="./skills"]
+  | llmAgent[source="ollama", model="gpt-oss", skills="./skills"]
   | print'
 ```
 
 ```
 INFO:talkpipe_agents.segments:agent → skills({'skill_name': 'ticket-triage'})
-P1: The printer on fire poses an immediate danger to people and property,
-requiring immediate attention.
+P1: The printer is on fire on the third floor, posing a direct danger to
+people and property.
 ```
 
 The `agent → skills(...)` line is the agent loading the skill; without

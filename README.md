@@ -17,7 +17,7 @@ talkpipe-agents is a [Talkpipe](https://github.com/sandialabs/talkpipe) plugin b
 
 Needs Python 3.11 or newer, and a model that can call tools. The
 quickest no-key setup is a local [Ollama](https://ollama.com) with a
-tool-calling model pulled (`ollama pull llama3.2`), but Ollama is only
+tool-calling model pulled (`ollama pull gpt-oss`), but Ollama is only
 one of the supported providers. The same workflow works with other
 providers too; see [Model providers](docs/model-providers.md).
 
@@ -37,9 +37,9 @@ command:
 ```bash
 chatterlang_script --logger_levels talkpipe_agents:INFO --script '
   INPUT FROM "What is 17 * 23 + 5?"
-  | llmAgent[source="ollama", model="llama3.2", tools=["calculator"]]
+  | llmAgent[source="ollama", model="gpt-oss", tools=["calculator"]]
   | print'
-# The result of 17 * 23 + 5 is 396.
+# The result is **396**.
 ```
 
 That is a three-segment pipeline. `INPUT FROM "…"` emits that one
@@ -60,7 +60,7 @@ from talkpipe.pipe import io
 from talkpipe_agents import LLMAgent
 
 pipeline = io.echo(data="What is 17 * 23 + 5?") | LLMAgent(
-    source="ollama", model="llama3.2", tools=["calculator"]
+    source="ollama", model="gpt-oss", tools=["calculator"]
 )
 print(list(pipeline()))
 ```
@@ -68,7 +68,7 @@ print(list(pipeline()))
 `Error: All connection attempts failed (nothing is listening at
 http://localhost:11434 …)` means just that: start the server, or name another
 one with `export TALKPIPE_OLLAMA_SERVER_URL=http://my-gpu-box:11434`; a
-`model 'llama3.2' not found` error names the server that lacks it and the
+`model 'gpt-oss' not found` error names the server that lacks it and the
 `ollama pull` that fixes it. To use
 OpenAI, Anthropic, or anything LiteLLM reaches instead, install the
 provider's extra, set its key, and change the `source=`/`model=` strings —

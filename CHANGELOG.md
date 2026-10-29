@@ -48,6 +48,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Models that do not think are unaffected by the replay, but the
   message threading changes for every model. `model_params='{"replay_thinking": false}'`
   turns the replay off for a model that reacts badly to it.
+- `list_files` and `search_files` now tell the model that their
+  `directory` defaults to `"."`, the current directory. Their
+  descriptions mentioned only that `"~"` is expanded, and gpt-oss
+  took that as a hint and listed or searched the home directory when
+  asked about the current one.
+
+### Documentation
+
+- The examples use `gpt-oss` on Ollama instead of `llama3.2` and
+  `qwen3`. The findings loop example asks about "my notes" so the
+  agent searches them first, and the `search_files` example asks
+  about the car registration, a phrase the file contains.
 
 ## 0.1.1 (2026-10-23)
 

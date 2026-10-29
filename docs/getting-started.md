@@ -59,7 +59,7 @@ A model that supports tool calling, from any of the providers
 under [Model providers](model-providers.md): Ollama, OpenAI, Anthropic,
 or anything LiteLLM reaches. `source=` names the provider and `model=`
 the model on it. The examples below use a local Ollama
-(`source="ollama", model="llama3.2"`) because it needs no key; to use
+(`source="ollama", model="gpt-oss"`) because it needs no key; to use
 another provider, install its extra, set its key, and change those two
 strings — `source="openai", model="gpt-4o"` or
 `source="anthropic", model="claude-haiku-4-5"` — and nothing else
@@ -77,7 +77,7 @@ are in place when the script compiles:
 ```bash
 chatterlang_script --load-module my_tools.py --script '
   INPUT FROM "How urgent is ticket T-1?"
-  | llmAgent[source="ollama", model="llama3.2",
+  | llmAgent[source="ollama", model="gpt-oss",
              tools=["lookup_ticket"], max_turns=4]
   | print'
 ```
@@ -99,7 +99,7 @@ from talkpipe.pipe import io
 from talkpipe_agents import LLMAgent
 
 pipeline = io.echo(data="How urgent is ticket T-1?") | LLMAgent(
-    source="ollama", model="llama3.2", tools=["lookup_ticket"]
+    source="ollama", model="gpt-oss", tools=["lookup_ticket"]
 )
 print(list(pipeline()))
 ```
@@ -112,7 +112,7 @@ from talkpipe.chatterlang import compiler
 
 script = """
   INPUT FROM "How urgent is ticket T-1?"
-  | llmAgent[source="ollama", model="llama3.2", tools=["lookup_ticket"]]
+  | llmAgent[source="ollama", model="gpt-oss", tools=["lookup_ticket"]]
 """
 print(list(compiler.compile(script)()))
 ```
@@ -128,7 +128,7 @@ import my_tools  # noqa: F401  (registers lookup_ticket)
 
 from talkpipe_agents import AgentChat
 
-chat = AgentChat(source="ollama", model="llama3.2", tools=["lookup_ticket"])
+chat = AgentChat(source="ollama", model="gpt-oss", tools=["lookup_ticket"])
 while (line := input("> ").strip()) not in ("", "quit"):
     print(chat.ask(line))
 ```

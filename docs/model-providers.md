@@ -8,7 +8,7 @@ built in:
 
 | `source=` | Install | Credentials and endpoint | `model=` |
 |-----------|---------|--------------------------|----------|
-| `ollama` | included | none; the server is `localhost:11434` unless `TALKPIPE_OLLAMA_SERVER_URL` names another (`http://my-gpu-box:11434`) | a model pulled into Ollama: `qwen3`, `llama3.2`, … |
+| `ollama` | included | none; the server is `localhost:11434` unless `TALKPIPE_OLLAMA_SERVER_URL` names another (`http://my-gpu-box:11434`) | a model pulled into Ollama: `gpt-oss`, `qwen3`, `llama3.2`, … |
 | `openai` (alias of `openai_responses`) | `pip install 'talkpipe-agents[openai]'` | `OPENAI_API_KEY` | `gpt-4o`, … |
 | `openai_chat` | `pip install 'talkpipe-agents[openai]'` | `OPENAI_BASE_URL` names the server (vLLM, LM Studio, a gateway, …); `OPENAI_API_KEY` its key (any non-empty value if it needs none) | whatever that server serves |
 | `anthropic` | `pip install 'talkpipe-agents[anthropic]'` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5`, … |
@@ -70,7 +70,7 @@ built in:
   ```
   llmAgent[source="openai", model="...", model_params='{"reasoning": {"effort": "low"}}']
   llmAgent[source="openai_chat", model="...", model_params='{"reasoning_effort": "none"}']
-  llmAgent[source="ollama", model="qwen3", model_params='{"num_ctx": 16384}']
+  llmAgent[source="ollama", model="gpt-oss", model_params='{"num_ctx": 16384}']
   ```
 
   `openai`/`openai_responses`, `openai_chat`, `anthropic` and `litellm` send them as
