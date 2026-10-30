@@ -5,6 +5,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- The findings judge now keeps by default and ranks what it keeps.
+  Its prompt no longer requires a finding to "add something not
+  already known", a gate smaller models read as "keep only the first
+  chunk on each topic": a finding is ignored only when it is off the
+  question or repeats a kept finding nearly word for word, and never
+  because another finding in the same call covers similar ground. The
+  judge also grades each finding's relevance from 1 to 5 (`score` in
+  its JSON, optional, so replies without it read as before), and the
+  session ranks kept findings by that grade. At `max_kept` a finding
+  graded above the weakest kept one displaces it, so the kept list is
+  the best N findings rather than the first N: the displaced finding
+  is ignored as `displaced by <id>`, the trace and the tool reply say
+  so, and `FindingsOutcome.findings` (and `FindingsSession.kept`)
+  lists kept findings best first, ties in keep order. Findings kept
+  without a grade (by hand, or by a judge whose reply gave none) rank
+  as the default grade, 3, so runs without grades behave as before.
+  `judgeFindings` adds `score` to each judgement it sets;
+  `ScriptedJudge`'s callable rule may return `(keep, reason, score)`.
+
 ## 0.2.0 (2026-10-29)
 
 ### Added

@@ -17,16 +17,17 @@ the tools search or compute::
   strings, or dicts, or search results) an agent tool. The function
   knows nothing about sessions or judges; it returns what it found.
 - :class:`FindingsSession` — one question's state: the findings seen,
-  kept (in keep order) and ignored, why, the stop rule, the turn
+  kept (graded, best first) and ignored, why, the stop rule, the turn
   countdown, and the standard reply the model reads.
 - :class:`FindingsJudge` — one batched model call deciding keep or
-  ignore for every finding of a call, read leniently (JSON, fenced,
-  in prose, or one decision per line). Also the ``judgeFindings``
-  segment, for pipelines without an agent.
+  ignore, with a relevance grade, for every finding of a call, read
+  leniently (JSON, fenced, in prose, or one decision per line). Also
+  the ``judgeFindings`` segment, for pipelines without an agent.
 - :class:`JudgeFindings` — the Strands hook that runs the judge as a
   step of the agent loop: after a finding tool's call, before the
   model sees the result. The judging costs the agent no turn, and it
-  cannot skip it.
+  cannot skip it. At ``max_kept`` a better-graded finding displaces
+  the weakest kept one, so the kept list is the best N, not the first N.
 - ``enough_information`` (the stop), ``keep_finding`` and
   ``ignore_finding`` (deciding by hand, for a session without a judge)
   — registered agent tools that act on the running session.
@@ -70,6 +71,10 @@ from .tools import register_agent_tool
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_KEPT = 10
+# The judge grades each finding's relevance 1..5. A finding kept without
+# a grade (by hand, by a judge whose reply gave none, or as "not judged")
+# ranks as the default, so an ungraded run keeps in arrival order.
+MIN_SCORE, MAX_SCORE, DEFAULT_SCORE = 1, 5, 3
 # How much of a finding the judge and the agent are shown. Enough for a
 # search chunk at talkpipe's default indexing settings; a shorter preview
 # hides the part of a finding that would have made it worth keeping.
@@ -255,11 +260,12 @@ def render_findings(findings: list[Finding], max_chars: int = DEFAULT_MAX_CHARS)
 
 @dataclass
 class FindingsOutcome:
-    """What a findings run produced: the kept findings (in keep order),
-    a one-line note saying how the run ended, and the trace of what the
-    agent did. ``error`` is the exception text when the run stopped
-    with one; ``undecided`` counts findings shown but neither kept nor
-    ignored (only possible without a judge)."""
+    """What a findings run produced: the kept findings (best first by
+    the judge's grade, ties in keep order), a one-line note saying how
+    the run ended, and the trace of what the agent did. ``error`` is
+    the exception text when the run stopped with one; ``undecided``
+    counts findings shown but neither kept nor ignored (only possible
+    without a judge)."""
 
     findings: list[Finding]
     note: str
@@ -269,12 +275,15 @@ class FindingsOutcome:
 
 
 class FindingsSession:
-    """One question's findings: seen, kept (in keep order) and ignored,
-    why each was decided, the stop rule and the turn countdown.
+    """One question's findings: seen, kept (graded) and ignored, why
+    each was decided, the stop rule and the turn countdown.
 
     *question* is what findings are judged against. *max_kept* is a
     ceiling on how much one run may keep — a backstop, not a goal: the
-    run should end when the agent calls ``enough_information``.
+    run should end when the agent calls ``enough_information``. Each
+    kept finding carries the judge's relevance grade (``DEFAULT_SCORE``
+    when it was kept without one); ``kept`` lists them best first, and
+    at the ceiling a better-graded finding may displace the weakest.
     *max_turns* is the agent's turn cap, when it has one: every reply
     then says how many turns are left. *tell* receives each trace line
     (they are also collected in ``trace``). *stop_instruction* is what
@@ -313,6 +322,8 @@ class FindingsSession:
         self.ignored_ids: set[str] = set()
         # Why each finding was kept or ignored, by id.
         self.reasons: dict[str, str] = {}
+        # The judge's relevance grade, by id, for findings that got one.
+        self.scores: dict[str, int] = {}
         # Set by enough_information: the agent's judgement that what is
         # kept would answer the question well — the intended stop.
         self.enough = False
@@ -345,10 +356,26 @@ class FindingsSession:
     def is_decided(self, fid: str) -> bool:
         return fid in self.ignored_ids or fid in self.kept_ids
 
+    def score_of(self, fid: str) -> int:
+        """The grade *fid* ranks by: the judge's, else ``DEFAULT_SCORE``."""
+        return self.scores.get(fid, DEFAULT_SCORE)
+
     @property
     def kept(self) -> list[Finding]:
-        """The kept findings, in keep order."""
-        return [self._findings[fid] for fid in self.kept_ids]
+        """The kept findings, best first: by grade, ties in keep order."""
+        ranked = sorted(self.kept_ids, key=self.score_of, reverse=True)
+        return [self._findings[fid] for fid in ranked]
+
+    def displaceable_by(self, score: int | None) -> str | None:
+        """At capacity, the id of the weakest kept finding when a new one
+        graded *score* (``None``: the default grade) outranks it; else
+        ``None``. Among equally weak findings, the one kept first."""
+        if not self.at_capacity:
+            return None
+        weakest = min(self.kept_ids, key=self.score_of)
+        if (DEFAULT_SCORE if score is None else score) > self.score_of(weakest):
+            return weakest
+        return None
 
     @property
     def ignored(self) -> list[Finding]:
@@ -383,8 +410,12 @@ class FindingsSession:
             self._findings[fid].key for fid in self._findings if self.is_decided(fid)
         }
 
-    def apply(self, fid: str, keep: bool, reason: str = "") -> None:
-        """Record a decision on *fid* and trace it."""
+    def apply(
+        self, fid: str, keep: bool, reason: str = "", score: int | None = None
+    ) -> None:
+        """Record a decision on *fid*, with the judge's grade *score* if
+        it gave one, and trace it. Ignoring a kept finding un-keeps it
+        (how a displaced finding leaves the kept list)."""
         reason = reason.strip().rstrip(".")
         with self.lock:
             if keep:
@@ -393,14 +424,19 @@ class FindingsSession:
                     self.kept_ids.append(fid)
             else:
                 self.ignored_ids.add(fid)
+                if fid in self.kept_ids:
+                    self.kept_ids.remove(fid)
             self.reasons[fid] = reason
+            if score is not None:
+                self.scores[fid] = score
         label = self._findings[fid].label
         # The trace is read by a person, who never saw which finding the
         # short id stands for; name it.
         named = f" ({label})" if label else ""
+        graded = f" [{score}/{MAX_SCORE}]" if score is not None else ""
         why = f" — {reason}" if reason else ""
         verb = "keep" if keep else "ignore"
-        self.tell(f"agent · {verb} {fid}{named}{why}. {self.status_line()}")
+        self.tell(f"agent · {verb} {fid}{named}{graded}{why}. {self.status_line()}")
 
     # -- stopping ------------------------------------------------------------
 
@@ -561,6 +597,15 @@ class FindingsSession:
             return "Already known: nothing yet."
         return "Already known:\n" + "\n".join(f"- {note}" for note in notes)
 
+    def _ignored_line(self, fid: str) -> str:
+        label = self._findings[fid].label
+        reason = self.reasons.get(fid, "")
+        return (
+            f"[{fid}]"
+            + (f" {label}" if label else "")
+            + (f" — {reason}" if reason else "")
+        )
+
     def reply(
         self,
         kept: list[str],
@@ -568,11 +613,13 @@ class FindingsSession:
         passed_over: int = 0,
         *,
         what: str = "",
+        displaced: list[str] | None = None,
     ) -> str:
         """The standard reply to a judged call: the kept findings in full,
-        one line per ignored one with its reason, how many relevant ones
-        the maximum left out, what is already known, and what to do next
-        with the turns left. *what* names the call (a tool name)."""
+        one line per ignored one with its reason, which earlier findings
+        the new ones displaced at the maximum and how many relevant ones
+        it left out, what is already known, and what to do next with the
+        turns left. *what* names the call (a tool name)."""
         total = len(kept) + len(ignored) + passed_over
         source = f" from {what}" if what else ""
         if not total:
@@ -587,14 +634,12 @@ class FindingsSession:
             lines.extend(self._describe(fid) for fid in kept)
         if ignored:
             lines.append("Ignored:")
-            for fid in ignored:
-                label = self._findings[fid].label
-                reason = self.reasons.get(fid, "")
-                lines.append(
-                    f"[{fid}]"
-                    + (f" {label}" if label else "")
-                    + (f" — {reason}" if reason else "")
-                )
+            lines.extend(self._ignored_line(fid) for fid in ignored)
+        if displaced:
+            lines.append(
+                f"No longer kept, outranked at the {self.max_kept}-finding maximum:"
+            )
+            lines.extend(self._ignored_line(fid) for fid in displaced)
         if passed_over:
             lines.append(
                 f"{passed_over} more relevant finding(s) were not kept: the "
@@ -676,20 +721,23 @@ class FindingsSession:
 
 JUDGE_SYSTEM_PROMPT = """You judge findings for an agent that gathers information to answer a question. You are shown the question; optionally what the tool call that produced these findings was looking for, and what is already known from findings kept earlier; then the findings, each labelled f1, f2, and so on.
 
-Decide for every finding whether to keep it or ignore it. Keep a finding if it helps answer the question, even in part, or if it supplies what the call was looking for even when it does not address the whole question. In either case it must add something that is not already known: a new fact, a missing piece of the answer, or corroboration from a different source. Ignore a finding that is about something else or only shares words with the question, and ignore a near-duplicate of what is already known. Read the question's terms in their ordinary sense. When unsure, keep.
+Decide for every finding whether to keep it or ignore it. The default is keep: keep a finding that bears on the question, even in part, or that supplies what the call was looking for. Overlapping coverage, examples, supporting detail, and another source saying the same thing are reasons to keep, not to ignore. Ignore a finding only when it is about something else or merely shares words with the question, or when its text repeats a finding that is already known nearly word for word. Never ignore a finding because another finding in this same list covers similar ground: judge each one against the question on its own. Read the question's terms in their ordinary sense. When unsure, keep.
 
-Reply with one decision per finding, in order, giving the finding's id, keep (true or false) and a short reason: for a kept finding, what it contributes to the answer; for an ignored one, why it does not help. Reply with JSON only, in this shape and nothing else:
-{"decisions": [{"id": "f1", "keep": true, "reason": "..."}, {"id": "f2", "keep": false, "reason": "..."}]}"""
+Also grade each finding's relevance from 1 to 5: 5 answers the question, or a large part of it, directly; 3 is useful supporting material; 1 is barely related. The agent can keep only so many findings, and the grades decide which stay when more are kept than fit, so grade the findings relative to each other.
+
+Reply with one decision per finding, in order, giving the finding's id, keep (true or false), the grade as score, and a short reason: for a kept finding, what it contributes to the answer; for an ignored one, why it does not help. Reply with JSON only, in this shape and nothing else:
+{"decisions": [{"id": "f1", "keep": true, "score": 4, "reason": "..."}, {"id": "f2", "keep": false, "score": 1, "reason": "..."}]}"""
 
 
 @dataclass
 class Decision:
     """One decision as the judge wrote it: the finding's label, keep or
-    not, and why."""
+    not, why, and the relevance grade (``None`` when it gave none)."""
 
     id: str
     keep: bool
     reason: str = ""
+    score: int | None = None
 
 
 @dataclass
@@ -699,6 +747,7 @@ class Judgement:
     finding: Finding
     keep: bool
     reason: str
+    score: int | None = None
 
 
 _KEEP_WORDS = frozenset({"keep", "true", "yes"})
@@ -722,6 +771,18 @@ def _as_keep(value: Any) -> bool | None:
     return None
 
 
+def _as_score(value: Any) -> int | None:
+    """*value* as a grade in ``MIN_SCORE..MAX_SCORE``, or ``None`` when
+    it is missing or unreadable (the decision then ranks as the default)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        score = round(float(str(value).strip()))
+    except (ValueError, OverflowError):
+        return None
+    return max(MIN_SCORE, min(MAX_SCORE, score))
+
+
 def _json_decisions(data: Any) -> list[Decision] | None:
     if isinstance(data, dict):
         data = data.get("decisions")
@@ -735,7 +796,12 @@ def _json_decisions(data: Any) -> list[Decision] | None:
         if keep is None:
             return None
         decisions.append(
-            Decision(str(entry["id"]), keep, str(entry.get("reason") or ""))
+            Decision(
+                str(entry["id"]),
+                keep,
+                str(entry.get("reason") or ""),
+                _as_score(entry.get("score", entry.get("grade"))),
+            )
         )
     return decisions
 
@@ -744,10 +810,12 @@ def parse_judgements(text: str) -> list[Decision]:
     """The judge's decisions from its reply, however it wrote them.
 
     The prompt asks for one JSON object; that is accepted bare, fenced,
-    or surrounded by prose, as is a bare JSON list of decisions. Failing
-    that, every line that reads as ``<id> <keep|ignore|true|false>
-    <reason>`` is a decision. Raises ``ValueError`` when no decision can
-    be read."""
+    or surrounded by prose, as is a bare JSON list of decisions. A
+    decision's ``score`` (or ``grade``) is optional: a reply without
+    grades reads as before, and its decisions rank as the default grade.
+    Failing JSON, every line that reads as ``<id> <keep|ignore|true|false>
+    <reason>`` is an ungraded decision. Raises ``ValueError`` when no
+    decision can be read."""
     text = text.strip()
     for start_char, end_char in (("{", "}"), ("[", "]")):
         start, end = text.find(start_char), text.rfind(end_char)
@@ -807,8 +875,9 @@ class FindingsJudge(AbstractSegment):
     question; optionally what the call that found them was looking for,
     notes on what is already known, and the keys of findings already
     decided on, which are skipped. Sets a list of judgements in order,
-    ``{"finding": Finding, "keep": bool, "reason": str}``, or with
-    ``drop_ignored`` only the kept ``Finding`` objects.
+    ``{"finding": Finding, "keep": bool, "reason": str, "score": int |
+    None}`` (the relevance grade, 1 to 5, when the model gave one), or
+    with ``drop_ignored`` only the kept ``Finding`` objects.
 
     As a judge (what the :class:`JudgeFindings` hook calls):
     :meth:`judge`. The model is any agent model source — ``source`` and
@@ -978,7 +1047,9 @@ class FindingsJudge(AbstractSegment):
                 judged.append(Judgement(finding, True, undecided))
             else:
                 judged.append(
-                    Judgement(finding, decision.keep, decision.reason.strip())
+                    Judgement(
+                        finding, decision.keep, decision.reason.strip(), decision.score
+                    )
                 )
         return judged
 
@@ -1004,7 +1075,12 @@ class FindingsJudge(AbstractSegment):
                     item,
                     self.set_as,
                     [
-                        {"finding": j.finding, "keep": j.keep, "reason": j.reason}
+                        {
+                            "finding": j.finding,
+                            "keep": j.keep,
+                            "reason": j.reason,
+                            "score": j.score,
+                        }
                         for j in judged
                     ],
                 )
@@ -1022,9 +1098,11 @@ class JudgeFindings(HookProvider):
     the agent has used. After a :func:`finding_tool` call it takes the
     call's findings and, with a ``judge``, judges them — skipping those
     already decided, against the question, the call's ``looking_for``
-    and what is already known — keeps and ignores them in order (past
-    ``max_kept``, relevant ones are passed over), and replaces the
-    result the model sees with :meth:`FindingsSession.reply`. Without a
+    and what is already known — keeps and ignores them in order. At
+    ``max_kept`` a finding graded above the weakest kept one displaces
+    it (the displaced finding is ignored as ``displaced by <id>``); the
+    rest of the relevant ones are passed over. The result the model
+    sees is replaced with :meth:`FindingsSession.reply`. Without a
     judge the findings are registered and shown with their ids for the
     agent to keep or ignore by hand. Every other tool's reply gets the
     turn countdown appended. With ``session`` unset the hook does
@@ -1097,24 +1175,34 @@ class JudgeFindings(HookProvider):
             )
             kept: list[str] = []
             ignored: list[str] = []
+            displaced: list[str] = []
             passed_over = 0
             for judgement in judgements:
+                weakest = None
                 if judgement.keep and session.at_capacity:
-                    # Not registered either, so it is not left undecided.
-                    passed_over += 1
-                    continue
+                    weakest = session.displaceable_by(judgement.score)
+                    if weakest is None:
+                        # Not registered either, so it is not left undecided.
+                        passed_over += 1
+                        continue
                 fid = session.register(judgement.finding)
                 if session.is_decided(fid):
                     continue
-                session.apply(fid, judgement.keep, judgement.reason)
+                if weakest is not None:
+                    session.apply(weakest, False, f"displaced by {fid}")
+                    displaced.append(weakest)
+                session.apply(fid, judgement.keep, judgement.reason, judgement.score)
                 (kept if judgement.keep else ignored).append(fid)
             session.tell(
                 f"agent ← {tool}: {len(kept) + len(ignored) + passed_over} "
                 f"finding(s), kept {len(kept)}, ignored {len(ignored)}"
+                + (f", {len(displaced)} displaced" if displaced else "")
                 + (f", {passed_over} passed over" if passed_over else "")
                 + f". {session.status_line()}"
             )
-            return session.reply(kept, ignored, passed_over, what=tool)
+            return session.reply(
+                kept, ignored, passed_over, what=tool, displaced=displaced
+            )
 
 
 def _with_note(result: Any, note: str) -> Any:

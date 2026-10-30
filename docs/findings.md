@@ -19,10 +19,14 @@ tool → findings → judge → session → reply to the model
   than prose. It knows nothing about the loop.
 - After each call, and before the model sees the result, a **judge**
   (one batched model call) decides keep or ignore for every new
-  finding. It judges against the question, against what this call was
-  `looking_for`, and against what is already known.
-- A per-question **session** accumulates the kept findings, skips any
-  it has already decided on, and enforces the stop rule.
+  finding and grades its relevance from 1 to 5. It judges against the
+  question and against what this call was `looking_for`; the default
+  is keep, and a finding is ignored only when it is off the question or
+  repeats one already known nearly word for word.
+- A per-question **session** accumulates the kept findings, best
+  first, skips any it has already decided on, and enforces the stop
+  rule. At `max_kept` a better-graded finding displaces the weakest
+  kept one, so the list is the best N findings, not the first N.
 - The model then reads a standard reply: the kept findings in full,
   one line per ignored finding with the reason, what is already known,
   and how many turns it has left. It chooses its next call from that,
@@ -233,7 +237,7 @@ from Python.
 |---|---|---|
 | `judge` | `False` | `True` runs the loop and judges with the agent's own model and source; from Python, a `FindingsJudge` (or `ScriptedJudge`) to judge with instead |
 | `findings` | `False` | runs the loop without a judge: the agent sees every finding with an id and decides itself with `keep_finding` / `ignore_finding`. Each of those calls takes a turn, so raise `max_turns` (default 8) for more than a couple of findings. `judge` wins when both are set |
-| `max_kept` | `10` | the most findings one item may keep. This is a backstop, not a goal: past it, relevant findings are passed over and the run is over |
+| `max_kept` | `10` | the most findings one item may keep. This is a backstop, not a goal: once it is reached, a finding the judge grades above the weakest kept one displaces it, the other relevant ones are passed over, and the run is over |
 | `question_field` | — | the property holding the question findings are judged against (default: the prompt) |
 | `findings_as` | — | sets the run's `FindingsOutcome` on the item, which must be a dict (see below) |
 | `hooks` | — | from Python: more [Strands hook providers](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/hooks/) for every agent |
@@ -277,7 +281,10 @@ the tools find, the agent says so instead.
 
 After each item, `last_outcome` holds a `FindingsOutcome`:
 
-- `findings`: the kept `Finding`s, in keep order;
+- `findings`: the kept `Finding`s, best first: by the judge's grade,
+  ties in keep order. A finding kept without a grade (by hand, or by a
+  judge whose reply gave none) ranks as the default grade, 3, so a run
+  without grades keeps in arrival order;
 - `note`: one line saying how the run ended: it judged it had enough,
   filled the maximum, hit the turn cap, found nothing relevant to
   keep, stopped without saying it had enough, or stopped with an
@@ -326,10 +333,13 @@ another system with different tools:
 
 - **`FindingsSession(question, max_kept=…, max_turns=…, tell=…)`**
   holds one question's state. It provides `register` (short ids `f1`,
-  `f2`, …, deduplicated by key), `apply`, `kept`, `ignored`, `notes`,
-  `known_notes()`, `seen_keys()`, `declare_enough`, the `guard` that
-  finding tools enforce, `note_turn` / `turns_left` / `turns_note()`,
-  `reply(...)` (the standard tool reply) and `outcome(...)`. The
+  `f2`, …, deduplicated by key), `apply` (keep or ignore, with the
+  judge's grade), `kept` (best first), `ignored`, `notes`,
+  `known_notes()`, `seen_keys()`, `score_of`, `displaceable_by` (at
+  capacity, the weakest kept finding a grade would displace),
+  `declare_enough`, the `guard` that finding tools enforce, `note_turn`
+  / `turns_left` / `turns_note()`, `reply(...)` (the standard tool
+  reply, including which findings a call displaced) and `outcome(...)`. The
   `stop_instruction` argument sets what the agent is told once the run
   is over. The default tells it to answer from the kept findings; an
   application that answers in a later step can tell it to reply `done`.
@@ -339,6 +349,9 @@ another system with different tools:
   replaces it, and subclasses can override `decide`. Replies are read
   leniently by `parse_judgements`: JSON bare, fenced or in prose, a
   bare list, or one `<id> <keep|ignore> <reason>` line per finding.
+  Each JSON decision may carry a `score`, the 1-to-5 relevance grade
+  the prompt asks for; a reply without grades reads as before, and its
+  decisions rank as the default grade.
   Some models ignore a requested output format, so schema-guided
   generation alone is not enough. When the model call fails, or its
   reply holds no decisions, every finding is kept with a `not judged: …`
@@ -358,7 +371,8 @@ another system with different tools:
 
   The findings field holds a list in any of the shapes a finding tool
   may return (strings, dicts with `text`, `Finding`s, search results).
-  It sets `judged` to `{"finding", "keep", "reason"}` dicts, or, with
+  It sets `judged` to `{"finding", "keep", "reason", "score"}` dicts
+  (`score` is the grade, or `None` when the model gave none), or, with
   `drop_ignored`, to the kept findings only.
 - **`JudgeFindings(session, judge)`** is the Strands hook provider.
   Install it on any Strands `Agent`, together with your finding tools
@@ -420,8 +434,9 @@ def test_answers_from_the_kept_note(scripted_model):
 ```
 
 `ScriptedJudge(keep=...)` takes either the labels to keep, or a
-callable that is given each `Finding` and returns `True`/`False` or
-`(keep, reason)`. `error=` makes every judgement fail, for testing the
+callable that is given each `Finding` and returns `True`/`False`,
+`(keep, reason)` or `(keep, reason, score)`, the last to test grading
+and displacement at `max_kept`. `error=` makes every judgement fail, for testing the
 keep-everything fallback. `batches` and `prompts` record what each
 judgement was shown. To test the JSON or prose parsing as well, use
 `judge=True`: the judge then asks the scripted model, so script its

@@ -195,6 +195,37 @@ def test_decisions_keep_order_notes_and_trace():
     assert session.at_capacity is False
 
 
+def test_kept_findings_rank_best_first_and_a_better_one_displaces_the_weakest():
+    session, lines = _session(max_kept=2)
+    f1, f2, f3 = (session.register(f) for f in NOTES)
+    session.apply(f1, True, "the answer", score=3)
+    session.apply(f2, True, "a fruit", score=1)
+    assert [f.label for f in session.kept] == ["geography", "fruit"]
+    assert session.score_of(f3) == 3  # ungraded: the default
+    assert session.at_capacity
+    # a new finding graded no better than the weakest does not displace it
+    assert session.displaceable_by(1) is None
+    assert session.displaceable_by(2) == f2
+    assert session.displaceable_by(None) == f2  # the default grade is 3
+    session.apply(f2, False, f"displaced by {f3}")
+    session.apply(f3, True, "the date", score=5)
+    assert session.kept_ids == [f1, f3]
+    assert [f.label for f in session.kept] == ["history", "geography"]  # best first
+    assert [f.label for f in session.ignored] == ["fruit"]
+    assert session.reasons[f2] == f"displaced by {f3}"
+    assert session.known_notes() == ["geography — the answer", "history — the date"]
+    assert lines[0].startswith("agent · keep f1 (geography) [3/5] — the answer.")
+    assert lines[2].startswith("agent · ignore f2 (fruit) — displaced by f3.")
+    assert "No longer kept, outranked at the 2-finding maximum:\n\n[f2] fruit" in (
+        session.reply([f3], [], displaced=[f2])
+    )
+    assert session.displaceable_by(3) is None  # the weakest kept is graded 3
+    assert session.displaceable_by(5) == f1
+    session, _ = _session(max_kept=2)
+    session.apply(session.register(NOTES[0]), True)
+    assert session.displaceable_by(5) is None  # not at capacity
+
+
 def test_enough_is_refused_while_nothing_is_kept():
     session, lines = _session()
     reply = session.declare_enough("done")
@@ -292,6 +323,31 @@ def test_replies_in_json_or_prose_are_both_read(reply):
     ]
 
 
+def test_the_grade_is_optional_and_clamped():
+    from talkpipe_agents.findings import JUDGE_SYSTEM_PROMPT
+
+    graded = parse_judgements(
+        '{"decisions": [{"id": "f1", "keep": true, "score": 4, "reason": "a"}, '
+        '{"id": "f2", "keep": false, "grade": "9", "reason": "b"}, '
+        '{"id": "f3", "keep": true, "score": "high", "reason": "c"}, '
+        '{"id": "f4", "keep": true, "reason": "d"}]}'
+    )
+    assert [d.score for d in graded] == [4, 5, None, None]
+    assert [d.score for d in parse_judgements(JSON_REPLY)] == [None, None]
+    assert [d.score for d in parse_judgements("f1 keep yes\nf2 ignore no")] == [
+        None,
+        None,
+    ]
+    judged = FindingsJudge(generate=lambda _p: JSON_REPLY).judge(NOTES[:2], QUESTION)
+    assert [j.score for j in judged] == [None, None]
+    # the prompt asks for the grade, and keeps by default: no novelty gate
+    assert '"score": 4' in JUDGE_SYSTEM_PROMPT
+    assert "The default is keep" in JUDGE_SYSTEM_PROMPT
+    assert "not already known" not in JUDGE_SYSTEM_PROMPT
+    assert "must add" not in JUDGE_SYSTEM_PROMPT
+    assert "Never ignore a finding because another finding" in JUDGE_SYSTEM_PROMPT
+
+
 def test_an_unreadable_reply_raises_in_the_parser():
     with pytest.raises(ValueError, match=r"held no decisions: 'I cannot decide\.'"):
         parse_judgements("I cannot decide.")
@@ -357,9 +413,9 @@ def test_judge_findings_segment_sets_judgements():
     judge = FindingsJudge(generate=lambda _p: JSON_REPLY)
     item = {"question": QUESTION, "findings": ["Paris.", "Bananas."]}
     [out] = judge([item])
-    assert [(j["finding"].text, j["keep"]) for j in out["judged"]] == [
-        ("Paris.", True),
-        ("Bananas.", False),
+    assert [(j["finding"].text, j["keep"], j["score"]) for j in out["judged"]] == [
+        ("Paris.", True, None),
+        ("Bananas.", False, None),
     ]
     dropper = FindingsJudge(
         generate=lambda _p: JSON_REPLY, drop_ignored=True, set_as="kept"
@@ -480,6 +536,43 @@ def test_capacity_passes_over_relevant_findings_and_refuses_more(scripted_model)
     assert searched == [("capital", "")]  # the refused call never ran
     assert step.last_outcome.note.startswith("Agent filled its 1-finding maximum")
     assert step.last_outcome.undecided == 0  # passed over is not undecided
+
+
+def test_a_better_graded_finding_displaces_the_weakest_at_capacity(scripted_model):
+    # NOTES arrive as geography (3), fruit (1), history (5): the first two
+    # fill max_kept=2, then history outranks fruit and takes its place.
+    grades = {"geography": 3, "fruit": 1, "history": 5}
+    judge = ScriptedJudge(keep=lambda f: (True, f"graded {f.label}", grades[f.label]))
+    scripted_model.call("search_notes", query="capital").say("Paris.")
+    step = _step(max_kept=2, judge=judge)
+    list(step([QUESTION]))
+    reply = scripted_model.tool_results[0].text
+    assert "3 new finding(s) from search_notes: kept 3, ignored 0." in reply
+    assert "No longer kept, outranked at the 2-finding maximum:" in reply
+    assert "[f2] fruit — displaced by f3" in reply
+    assert "Already known:\n- geography — graded geography\n- history" in reply
+    assert "You have kept the maximum of 2 findings." in reply
+    outcome = step.last_outcome
+    assert [f.label for f in outcome.findings] == ["history", "geography"]
+    trace = "\n".join(outcome.trace)
+    assert "agent · keep f3 (history) [5/5] — graded history." in trace
+    assert "agent · ignore f2 (fruit) — displaced by f3." in trace
+    assert "3 finding(s), kept 3, ignored 0, 1 displaced." in trace
+    assert outcome.note.startswith(
+        "Agent filled its 2-finding maximum: kept 2 findings after 1 call, ignored 1."
+    )
+
+
+def test_an_equal_grade_is_passed_over_not_displaced(scripted_model):
+    # Ungraded decisions rank as the default, so a run without grades
+    # keeps in arrival order and passes the rest over, as before.
+    scripted_model.call("search_notes", query="capital").say("Paris.")
+    step = _step(max_kept=2, judge=ScriptedJudge(keep=lambda _f: True))
+    list(step([QUESTION]))
+    reply = scripted_model.tool_results[0].text
+    assert "1 more relevant finding(s) were not kept" in reply
+    assert "No longer kept" not in reply
+    assert [f.label for f in step.last_outcome.findings] == ["geography", "fruit"]
 
 
 def test_plain_tools_get_the_countdown_too(scripted_model):

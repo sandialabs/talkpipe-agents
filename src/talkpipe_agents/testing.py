@@ -275,7 +275,9 @@ class ScriptedJudge(FindingsJudge):
 
     *keep* is either the labels of the findings to keep (every other
     one is ignored) or a callable given each :class:`Finding` and
-    returning ``True``/``False``, or ``(keep, reason)``. *error*, when
+    returning ``True``/``False``, ``(keep, reason)`` or ``(keep, reason,
+    score)`` — the relevance grade, 1 to 5, that ranks kept findings
+    and lets one displace a weaker one at ``max_kept``. *error*, when
     set, is raised in place of every decision, to test the judge
     failing (which keeps every finding as "not judged"). ``batches``
     records the labels of the findings each judgement was shown and
@@ -284,7 +286,8 @@ class ScriptedJudge(FindingsJudge):
 
     def __init__(
         self,
-        keep: Iterable[str] | Callable[[Finding], bool | tuple[bool, str]] = (),
+        keep: Iterable[str]
+        | Callable[[Finding], bool | tuple[bool, str] | tuple[bool, str, int]] = (),
         *,
         error: Exception | None = None,
     ) -> None:
@@ -303,13 +306,19 @@ class ScriptedJudge(FindingsJudge):
             raise self._error
         decisions = {}
         for label, finding in labelled:
+            score: int | None = None
             if callable(self._rule):
                 verdict = self._rule(finding)
-                keep, reason = verdict if isinstance(verdict, tuple) else (verdict, "")
+                if isinstance(verdict, tuple):
+                    keep, reason = verdict[0], verdict[1]
+                    if len(verdict) > 2:
+                        score = verdict[2]
+                else:
+                    keep, reason = verdict, ""
             else:
                 keep, reason = finding.label in self._rule, ""
             reason = reason or ("relevant" if keep else "not relevant")
-            decisions[label] = Decision(label, bool(keep), reason)
+            decisions[label] = Decision(label, bool(keep), reason, score)
         return decisions
 
 
