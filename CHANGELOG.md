@@ -40,6 +40,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   3.x release is affected, so pip installs keep filelock 3.x until
   they lift that cap. nltk GHSA-8mgp-746c-j5xp has no fixed release
   yet; nltk reaches only the safety scanner, never the package.
+- Upgrading **downgrades mcp** in an environment that has mcp 2.0 or
+  2.1: the new floor excludes both, and strands-agents does not yet
+  allow 2.2, so pip installs mcp 1.30.0. talkpipe-agents does not use
+  mcp itself and strands-agents accepts 1.x, but other code in the
+  same environment that needs mcp 2.x will break. Such code needs an
+  environment of its own (or talkpipe-agents 0.2.0) until a
+  strands-agents release allows mcp 2.2.
 
 ## 0.2.0 (2026-10-29)
 
