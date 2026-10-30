@@ -26,6 +26,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `judgeFindings` adds `score` to each judgement it sets;
   `ScriptedJudge`'s callable rule may return `(keep, reason, score)`.
 
+### Security
+
+- Dependency floors and the lock moved past published advisories:
+  `mcp>=1.30.0,!=2.0.*,!=2.1.*` (strands-agents caps mcp below 2.2,
+  the first patched 2.x, so installs now resolve to the patched 1.30
+  line), `dnspython>=2.9.0`, `opentelemetry-api>=1.45.1`, and the
+  scanner-only `authlib` pin to `>=1.9.1`. The lock also takes nltk
+  3.10.4 (via safety) and, through a lock-only uv override, filelock
+  4.2.4: litellm and safety still cap filelock below 4.0, and every
+  3.x release is affected, so pip installs keep filelock 3.x until
+  they lift that cap. nltk GHSA-8mgp-746c-j5xp has no fixed release
+  yet; nltk reaches only the safety scanner, never the package.
+
 ## 0.2.0 (2026-10-29)
 
 ### Added

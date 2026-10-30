@@ -38,8 +38,12 @@ dependencies = [
     "aiohttp>=3.14.4",
     "virtualenv>=21.14.7",
     "litellm>=1.95.1",
-    "mcp>=1.30.0",
+    # 1.30.0 is the patched 1.x line; 2.0/2.1 carry the advisories fixed in
+    # 2.2.0, which strands-agents (mcp<2.2) does not yet allow.
+    "mcp>=1.30.0,!=2.0.*,!=2.1.*",
     "multidict>6.9.1",
+    "dnspython>=2.9.0",
+    "opentelemetry-api>=1.45.1",
 ]
 
 [project.optional-dependencies]
@@ -55,7 +59,7 @@ dev = [
     "pre-commit>=4.0",
     "bandit>=1.7.0",
     "safety>=2.3.0",
-    "authlib>=1.6.12,<1.10",  # scanner-only pin; see the security extra
+    "authlib>=1.9.1,<1.10",  # scanner-only pin; see the security extra
 ]
 security = [
     "bandit>=1.7.0",
@@ -68,9 +72,8 @@ security = [
     # crashes on startup -- with or without an API key -- before scanning
     # anything. Lift the ceiling once a safety release works alongside
     # httpx2 (or authlib stops preferring it). The floor is the usual
-    # security minimum: 1.6.12 is the first release with no known advisory,
-    # so capping below 1.8 cannot resolve onto a vulnerable authlib.
-    "authlib>=1.6.12,<1.10",
+    # security minimum: 1.9.1 is the first release with no known advisory.
+    "authlib>=1.9.1,<1.10",
 ]
 openai = ["strands-agents[openai]"]
 anthropic = ["strands-agents[anthropic]"]
@@ -97,6 +100,13 @@ talkpipe_agents = "talkpipe_agents._pytest_plugin"
 # Version comes from git tags (v0.0.1a1, v0.1.0, ...) via setuptools_scm,
 # the same scheme talkpipe uses; there is no version string to bump in-tree.
 [tool.setuptools_scm]
+
+[tool.uv]
+# Lock-only: litellm and safety still cap filelock below 4.0, but every 3.x
+# release carries advisories fixed only in 4.2.1. This lifts the cap for the
+# locked dev/CI environment; pip installs still follow litellm's cap. Drop
+# it once litellm and safety allow filelock 4.
+override-dependencies = ["filelock>=4.2.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
