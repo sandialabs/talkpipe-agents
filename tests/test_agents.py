@@ -1174,3 +1174,46 @@ def test_missing_skills_path_is_a_compile_error(tmp_path):
         compiler.compile(
             f'INPUT FROM "x" | llmAgent[source="scripted", skills="{missing}"]'
         )
+
+
+def test_a_deadline_cancels_tool_calls_but_not_the_answer(scripted_model, monkeypatch):
+    """``max_seconds`` on a plain agent and on AgentChat: the Deadline hook
+    refuses tools after the budget; the model still answers."""
+    import time
+
+    from talkpipe_agents.hooks import Deadline
+
+    class Clock:
+        now = 0.0
+
+        def __call__(self):
+            Clock.now += 100.0
+            return Clock.now
+
+    monkeypatch.setattr(time, "monotonic", Clock())
+    scripted_model.call("count_words", text="a b c").say("Three, I think.")
+    lines: list[str] = []
+    step = LLMAgent(
+        source="scripted",
+        model="any",
+        tools=["count_words"],
+        max_seconds=60,
+        progress=lines.append,
+    )
+    with pytest.warns(ScriptedToolErrorWarning, match="time budget is spent"):
+        assert list(step(["How many words?"])) == ["Three, I think."]
+    assert scripted_model.tool_results[0].status == "error"
+    assert "60-second time budget is spent" in scripted_model.tool_results[0].text
+    assert "agent: stopped at the time budget (60 s)" in lines
+    assert step.max_seconds == 60
+
+    scripted_model.call("count_words", text="a b").say("Two.")
+    chat = AgentChat(
+        source="scripted", model="any", tools=["count_words"], max_seconds=5
+    )
+    with pytest.warns(ScriptedToolErrorWarning, match="time budget is spent"):
+        assert chat.ask("How many?") == "Two."
+    assert scripted_model.tool_results[1].status == "error"
+    assert "5-second time budget is spent" in scripted_model.tool_results[1].text
+    with pytest.raises(ValueError, match="max_seconds must be positive"):
+        Deadline(0)

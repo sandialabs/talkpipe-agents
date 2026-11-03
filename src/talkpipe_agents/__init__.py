@@ -36,7 +36,8 @@ directly for Python composition.
 - ``hooks`` — ``AgentHooks`` and ``AgentRetryStrategy``, the Strands
   hook providers both entry points install: per-tool-call progress
   lines, scrubbing of leaked tool-call syntax as messages are stored,
-  and retrying a model call whose tool call the server could not parse.
+  and retrying a model call whose tool call the server could not parse;
+  and ``Deadline``, the wall-clock budget behind ``max_seconds``.
 - ``replies`` — ``ask_and_clean`` (one prompt under Strands ``limits``,
   with the empty-reply retry) and ``agent_limits``.
 - ``support`` — the shared progress convention (``teller``) and reply
@@ -72,16 +73,18 @@ from .findings import (
     FindingsJudge,
     FindingsOutcome,
     FindingsSession,
+    FoundFindings,
     JudgeFindings,
     Judgement,
     as_findings,
+    below_score_floor,
     enough_information,
     finding_tool,
     ignore_finding,
     keep_finding,
     parse_judgements,
 )
-from .hooks import AgentHooks
+from .hooks import AgentHooks, Deadline
 from .models import agent_model_sources, build_agent_model, register_agent_model
 from .replies import agent_limits, ask_and_clean
 
@@ -104,11 +107,13 @@ from .tools import (
 __all__ = [
     "AgentChat",
     "AgentHooks",
+    "Deadline",
     "Finding",
     "FindingTool",
     "FindingsJudge",
     "FindingsOutcome",
     "FindingsSession",
+    "FoundFindings",
     "JudgeFindings",
     "Judgement",
     "LLMAgent",
@@ -120,6 +125,7 @@ __all__ = [
     "agent_tool_names",
     "as_findings",
     "ask_and_clean",
+    "below_score_floor",
     "build_agent_model",
     "calculator",
     "clear_notes",

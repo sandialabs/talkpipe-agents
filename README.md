@@ -97,7 +97,10 @@ The placement gives you real boundaries, not vibes:
   calls; the hard, provider-independent cap, default 8) and the soft
   token budgets `max_output_tokens` / `max_total_tokens` (`None` = no
   cap; they rely on the provider reporting usage, which all the
-  built-in sources do),
+  built-in sources do) — plus `max_seconds`, a wall-clock budget per
+  item: once it is spent, every further tool call is refused with a
+  message telling the model to answer from what it has (`max_turns`
+  stays the hard cap) —
   so a confused model cannot spin forever or run up a bill. When a cap
   ends an item before any answer, the segment yields whatever text there
   was (possibly empty) and `last_result.stop_reason` names the limit —

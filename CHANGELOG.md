@@ -5,6 +5,29 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- `max_seconds` on `llmAgent` and `AgentChat`: a wall-clock budget per
+  item (per `ask()`). Once it is spent, every further tool call is
+  cancelled before it runs with a reply telling the model to answer
+  from what it has; `max_turns` stays the hard cap. With the findings
+  loop on, the outcome says the run "hit its N-second time budget".
+  The hook behind it, `Deadline`, can be installed on any Strands
+  agent.
+- `min_score` on `@finding_tool`, `make_finding_tool` and
+  `findingTool`: a floor on the findings' scores (`Finding.search_score`, new:
+  a search hit's score or a numeric `meta["score"]`). Results under it
+  are left out before the judge sees them, and the model is told how
+  many were, so a search whose best hit is weak costs no judge call.
+  Findings with no score always pass.
+- The judge asks again about the findings a reply left undecided, on
+  their own and under the same labels (`FindingsJudge(retries=…)`,
+  default 1), and `batch_size` judges at most that many findings per
+  model call. `parse_judgements` reads the complete decisions out of a
+  reply cut off mid-JSON, as a model's output limit does (qwen3 judging
+  eight findings), instead of reading none and keeping everything
+  unjudged.
+
 ## 0.3.0 (2026-10-30)
 
 ### Changed

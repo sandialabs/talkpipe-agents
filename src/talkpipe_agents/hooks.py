@@ -19,17 +19,23 @@ Three concerns that belong at the agent loop rather than around it:
   mid-object) with ``error parsing tool call``. That is a sampling
   accident, not a fault in the request, so the model call is retried the
   way Strands retries throttling, instead of ending the whole run.
+
+:class:`Deadline` is the wall-clock budget (``max_seconds``) Strands'
+``limits`` lack: once a prompt has run that long, every further tool call
+is cancelled with a message telling the model to answer from what it has.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
 from strands.agent import ModelRetryStrategy
 from strands.hooks import (
     AfterToolCallEvent,
+    BeforeInvocationEvent,
     BeforeToolCallEvent,
     HookProvider,
     HookRegistry,
@@ -88,6 +94,57 @@ class AgentHooks(HookProvider):
             if cleaned != text:
                 block["text"] = cleaned
                 self._tell("agent: scrubbed leaked tool-call syntax from a reply")
+
+
+class Deadline(HookProvider):
+    """A wall-clock budget per prompt: *max_seconds* after an invocation
+    starts, every tool call is cancelled before it runs, and the model
+    reads a tool result saying the budget is spent and to answer now
+    from what it has. Soft on purpose — the model's turns are still
+    bounded by ``max_turns``, the hard cap — so a model that keeps
+    calling tools after the deadline gets the same answer each time
+    and nothing more is fetched. ``timed_out`` says whether the latest
+    invocation hit the budget. *clock* is for tests."""
+
+    def __init__(
+        self,
+        max_seconds: float,
+        tell: Callable[[str], None] = logger.info,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        if isinstance(max_seconds, bool) or not isinstance(max_seconds, (int, float)):
+            raise ValueError(f"max_seconds must be a number, got {max_seconds!r}")
+        if max_seconds <= 0:
+            raise ValueError(f"max_seconds must be positive, got {max_seconds!r}")
+        self.max_seconds = max_seconds
+        self._tell = tell
+        self._clock = clock or time.monotonic
+        self._started = self._clock()
+        self.timed_out = False
+
+    def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
+        registry.add_callback(BeforeInvocationEvent, self._start)
+        registry.add_callback(BeforeToolCallEvent, self._before_tool)
+
+    def _start(self, event: BeforeInvocationEvent) -> None:
+        self._started = self._clock()
+        self.timed_out = False
+
+    @property
+    def elapsed(self) -> float:
+        return self._clock() - self._started
+
+    def _before_tool(self, event: BeforeToolCallEvent) -> None:
+        elapsed = self.elapsed
+        if elapsed < self.max_seconds:
+            return
+        if not self.timed_out:
+            self.timed_out = True
+            self._tell(f"agent: stopped at the time budget ({self.max_seconds:g} s)")
+        event.cancel_tool = (
+            f"The {self.max_seconds:g}-second time budget is spent ({elapsed:.0f} s "
+            "used): stop calling tools and answer now from what you have."
+        )
 
 
 class AgentRetryStrategy(ModelRetryStrategy):

@@ -193,9 +193,19 @@ A finding tool may take a `looking_for` argument. This is a
 convention, not a requirement: the model says in one phrase what the
 call should find that the answer still lacks, and the judge keeps a
 finding that supplies exactly that, even if it is not the whole
-answer. Once the run is over (the agent has said it has enough, or the
-maximum is kept), the tool refuses further calls without running the
-function.
+answer. Once the run is over (the agent has said it has enough, the
+maximum is kept, or the time budget is spent), the tool refuses
+further calls without running the function.
+
+`@finding_tool(min_score=0.4)` sets a score floor: results whose
+`Finding.search_score` (a search hit's score, or a numeric `meta["score"]`)
+is under it are left out before the judge sees them, and the model is
+told how many were — so a search whose best hit is weak costs no judge
+call, and the model knows to try other terms rather than reading "no
+results" as "nothing exists". Findings with no score always pass. The
+scale is the tool's (a vector search's similarity is not a keyword
+search's BM25 score), which is why the floor belongs with the tool and
+not with the session.
 
 Outside the loop, a finding tool is still an ordinary tool. Given to an
 agent without `judge=True`, its findings come back as numbered text.
@@ -227,9 +237,10 @@ finding, so the trace and `last_outcome` can tell findings apart.
 The tool takes `text`, which is fed to the script as its input
 stream, and `looking_for`, which goes to the judge. Like `scriptTool`,
 the tool is registered when the script compiles, and each call runs a
-fresh instance of the script.
-`make_finding_tool(name, description, script)` builds the same tool
-from Python.
+fresh instance of the script. `min_score=` gives it a score floor, as
+for `@finding_tool`, for a script that emits search results.
+`make_finding_tool(name, description, script, min_score=…)` builds the
+same tool from Python.
 
 ## `llmAgent` parameters
 
@@ -241,6 +252,13 @@ from Python.
 | `question_field` | — | the property holding the question findings are judged against (default: the prompt) |
 | `findings_as` | — | sets the run's `FindingsOutcome` on the item, which must be a dict (see below) |
 | `hooks` | — | from Python: more [Strands hook providers](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/hooks/) for every agent |
+
+`max_seconds` (an `llmAgent` and `AgentChat` parameter, not only the
+loop's) is the wall-clock budget per item: once spent, every further
+tool call is refused and the model is told to answer from what it has.
+With the loop on, the outcome then says the run "hit its N-second time
+budget" unless the agent had already said it had enough; `max_turns`
+stays the hard cap on turns.
 
 The loop, `findings_as` and `hooks` are `llmAgent`'s; `AgentChat` has
 none of them. The loop judges only what finding tools return: with no
@@ -286,9 +304,9 @@ After each item, `last_outcome` holds a `FindingsOutcome`:
   judge whose reply gave none) ranks as the default grade, 3, so a run
   without grades keeps in arrival order;
 - `note`: one line saying how the run ended: it judged it had enough,
-  filled the maximum, hit the turn cap, found nothing relevant to
-  keep, stopped without saying it had enough, or stopped with an
-  error;
+  filled the maximum, hit its time budget, hit the turn cap, found
+  nothing relevant to keep, stopped without saying it had enough, or
+  stopped with an error;
 - `trace`: every progress line;
 - `error` and `undecided`.
 
@@ -331,14 +349,14 @@ none), so `AppendRAGSources` lists it by its label, the tool's name.
 Each part also works on its own, so the loop can be carried into
 another system with different tools:
 
-- **`FindingsSession(question, max_kept=…, max_turns=…, tell=…)`**
-  holds one question's state. It provides `register` (short ids `f1`,
+- **`FindingsSession(question, max_kept=…, max_turns=…, max_seconds=…,
+  tell=…)`** holds one question's state. It provides `register` (short ids `f1`,
   `f2`, …, deduplicated by key), `apply` (keep or ignore, with the
   judge's grade), `kept` (best first), `ignored`, `notes`,
   `known_notes()`, `seen_keys()`, `score_of`, `displaceable_by` (at
   capacity, the weakest kept finding a grade would displace),
   `declare_enough`, the `guard` that finding tools enforce, `note_turn`
-  / `turns_left` / `turns_note()`, `reply(...)` (the standard tool
+  / `turns_left` / `turns_note()`, `timed_out`, `reply(...)` (the standard tool
   reply, including which findings a call displaced) and `outcome(...)`. The
   `stop_instruction` argument sets what the agent is told once the run
   is over. The default tells it to answer from the kept findings; an
@@ -353,9 +371,14 @@ another system with different tools:
   the prompt asks for; a reply without grades reads as before, and its
   decisions rank as the default grade.
   Some models ignore a requested output format, so schema-guided
-  generation alone is not enough. When the model call fails, or its
-  reply holds no decisions, every finding is kept with a `not judged: …`
-  reason and the run goes on. A model that cannot be built at all (no
+  generation alone is not enough. A reply cut off mid-JSON by the
+  model's output limit still yields the decisions that are complete,
+  and the findings a reply left undecided — cut off or skipped — are
+  asked about again on their own, under the same labels (`retries`,
+  default 1); `batch_size` judges at most that many findings per model
+  call, for a model whose replies get long. When the model call fails,
+  or a finding is still undecided after the retries, the finding is
+  kept with a `not judged: …` reason and the run goes on. A model that cannot be built at all (no
   model configured, an unknown source, a missing provider extra) raises
   instead, since every judgement would fail the same way.
 - **`judgeFindings`** is the same judge as a segment, for pipelines
@@ -376,7 +399,9 @@ another system with different tools:
   `drop_ignored`, to the kept findings only.
 - **`JudgeFindings(session, judge)`** is the Strands hook provider.
   Install it on any Strands `Agent`, together with your finding tools
-  and `enough_information`, and the loop runs there. Without a judge,
+  and `enough_information`, and the loop runs there (add
+  `talkpipe_agents.Deadline(max_seconds)` to the hooks for the time
+  budget; it is what `llmAgent` installs behind `max_seconds`). Without a judge,
   findings are registered and shown undecided. `llmAgent` also tells
   the model how the loop works, in its system prompt; a bare agent
   needs the same text, `talkpipe_agents.findings.FINDINGS_PROTOCOL`

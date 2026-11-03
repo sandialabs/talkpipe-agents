@@ -45,6 +45,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Annotated, Any
@@ -177,6 +178,21 @@ class Finding:
             meta={"result": result},
         )
 
+    @property
+    def search_score(self) -> float | None:
+        """The score the finding's tool gave it, when it gave one: the
+        search hit's score (``meta["result"]``), else a numeric
+        ``meta["score"]``; ``None`` for a finding with no score. Not the
+        judge's relevance grade (``FindingsSession.score_of``): this is
+        the retrieval's own similarity, on the tool's scale."""
+        result = self.meta.get("result")
+        if isinstance(result, SearchResult):
+            return float(result.score)
+        value = self.meta.get("score")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        return None
+
     def to_search_result(self) -> SearchResult:
         """The finding as a talkpipe ``SearchResult``, for talkpipe's RAG
         segments (``ConstructRAGPrompt``, ``AppendRAGSources``): the
@@ -243,16 +259,54 @@ def as_findings(value: Any, label: str = "") -> list[Finding]:
     return [f for f in (as_finding(v, label) for v in values) if f is not None]
 
 
-def render_findings(findings: list[Finding], max_chars: int = DEFAULT_MAX_CHARS) -> str:
+def below_score_floor(
+    findings: list[Finding], min_score: float | None
+) -> tuple[list[Finding], int]:
+    """*findings* without those scoring under *min_score*, and how many
+    were left out. A finding with no score always passes; with
+    *min_score* ``None`` nothing is left out."""
+    if min_score is None:
+        return findings, 0
+    kept = [
+        f for f in findings if f.search_score is None or f.search_score >= min_score
+    ]
+    return kept, len(findings) - len(kept)
+
+
+def _floor_note(below_floor: int) -> str:
+    return (
+        f"{below_floor} result(s) scored below the tool's floor and were left out."
+        if below_floor
+        else ""
+    )
+
+
+def render_findings(
+    findings: list[Finding], max_chars: int = DEFAULT_MAX_CHARS, below_floor: int = 0
+) -> str:
     """Findings as plain text — what the model reads from a finding
-    tool used without a findings session (no ``JudgeFindings`` hook)."""
+    tool used without a findings session (no ``JudgeFindings`` hook).
+    *below_floor* is how many results the tool's score floor left out,
+    which the model is told so it can try other terms."""
     if not findings:
-        return "Nothing found."
+        return " ".join(filter(None, ["Nothing found.", _floor_note(below_floor)]))
     blocks = []
     for i, finding in enumerate(findings, 1):
         head = f"[{i}]" + (f" {finding.label}" if finding.label else "")
         blocks.append(f"{head}\n{_preview(finding.text, max_chars)}")
+    if below_floor:
+        blocks.append(_floor_note(below_floor))
     return "\n\n".join(blocks)
+
+
+@dataclass
+class FoundFindings:
+    """What one finding tool call stashed for the :class:`JudgeFindings`
+    hook: the findings above the tool's score floor, and how many
+    results the floor left out."""
+
+    findings: list[Finding]
+    below_floor: int = 0
 
 
 # -- the session -------------------------------------------------------------
@@ -285,9 +339,13 @@ class FindingsSession:
     when it was kept without one); ``kept`` lists them best first, and
     at the ceiling a better-graded finding may displace the weakest.
     *max_turns* is the agent's turn cap, when it has one: every reply
-    then says how many turns are left. *tell* receives each trace line
-    (they are also collected in ``trace``). *stop_instruction* is what
-    the agent is told to do once the run is over.
+    then says how many turns are left. *max_seconds* is the run's time
+    budget, when it has one: once it is spent the run is over, like
+    reaching *max_kept* (the :class:`~talkpipe_agents.hooks.Deadline`
+    hook, which ``llmAgent`` installs with the same budget, cancels the
+    tool calls themselves). *tell* receives each trace line (they are
+    also collected in ``trace``). *stop_instruction* is what the agent
+    is told to do once the run is over.
 
     Strands runs one turn's tool calls concurrently, in threads; ``lock``
     serializes registering and deciding, and the :class:`JudgeFindings`
@@ -304,10 +362,15 @@ class FindingsSession:
         tell: Callable[[str], None] | None = None,
         stop_instruction: str = DEFAULT_STOP_INSTRUCTION,
         max_chars: int = DEFAULT_MAX_CHARS,
+        max_seconds: float | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.question = str(question).strip()
         self.max_kept = max(1, max_kept)
         self.max_turns = max(1, max_turns) if max_turns is not None else None
+        self.max_seconds = max_seconds
+        self._clock = clock or time.monotonic
+        self.started = self._clock()
         self.stop_instruction = stop_instruction
         self.max_chars = max(1, max_chars)
         self._tell = tell or logger.info
@@ -446,12 +509,22 @@ class FindingsSession:
         return len(self.kept_ids) >= self.max_kept
 
     @property
+    def timed_out(self) -> bool:
+        """True once the run's time budget (*max_seconds*) is spent."""
+        return (
+            self.max_seconds is not None
+            and self._clock() - self.started >= self.max_seconds
+        )
+
+    @property
     def stop_note(self) -> str:
         """Why the run is over, phrased for the model; empty while it runs."""
         if self.enough:
             return "you already said you had enough"
         if self.at_capacity:
             return f"the {self.max_kept}-finding maximum is reached"
+        if self.timed_out:
+            return f"the {self.max_seconds:g}-second time budget is spent"
         return ""
 
     @property
@@ -614,17 +687,28 @@ class FindingsSession:
         *,
         what: str = "",
         displaced: list[str] | None = None,
+        below_floor: int = 0,
     ) -> str:
         """The standard reply to a judged call: the kept findings in full,
         one line per ignored one with its reason, which earlier findings
         the new ones displaced at the maximum and how many relevant ones
-        it left out, what is already known, and what to do next with the
+        it left out, how many results the tool's score floor left out
+        unjudged, what is already known, and what to do next with the
         turns left. *what* names the call (a tool name)."""
         total = len(kept) + len(ignored) + passed_over
         source = f" from {what}" if what else ""
         if not total:
             return self.with_turns(
-                f"No new findings{source}. Try different terms. {self.status_line()}"
+                " ".join(
+                    filter(
+                        None,
+                        [
+                            f"No new findings{source}.",
+                            _floor_note(below_floor),
+                            f"Try different terms. {self.status_line()}",
+                        ],
+                    )
+                )
             )
         lines = [
             f"{total} new finding(s){source}: kept {len(kept)}, ignored {len(ignored)}."
@@ -645,6 +729,8 @@ class FindingsSession:
                 f"{passed_over} more relevant finding(s) were not kept: the "
                 f"{self.max_kept}-finding maximum is reached."
             )
+        if below_floor:
+            lines.append(_floor_note(below_floor))
         lines.append(self._known_summary())
         if self.at_capacity:
             lines.append(
@@ -659,13 +745,28 @@ class FindingsSession:
             )
         return self.with_turns("\n\n".join(lines))
 
-    def show_undecided(self, fids: list[str], *, what: str = "") -> str:
+    def show_undecided(
+        self, fids: list[str], *, what: str = "", below_floor: int = 0
+    ) -> str:
         """The reply to a call when no judge runs: every finding with its
         id, for the agent to decide on with keep_finding / ignore_finding."""
         source = f" from {what}" if what else ""
         if not fids:
-            return self.with_turns(f"Nothing found{source}. Try different terms.")
+            return self.with_turns(
+                " ".join(
+                    filter(
+                        None,
+                        [
+                            f"Nothing found{source}.",
+                            _floor_note(below_floor),
+                            "Try different terms.",
+                        ],
+                    )
+                )
+            )
         blocks = []
+        if below_floor:
+            blocks.append(_floor_note(below_floor))
         for fid in fids:
             block = self._describe(fid)
             if fid in self.kept_ids:
@@ -694,6 +795,8 @@ class FindingsSession:
                 how += f" ({self.enough_reason})"
         elif self.at_capacity:
             how = f"filled its {self.max_kept}-finding maximum"
+        elif self.timed_out:
+            how = f"hit its {self.max_seconds:g}-second time budget"
         elif str(stop_reason).startswith("limit"):
             cap = f" {self.max_turns}-turn" if self.max_turns else ""
             how = f"hit the{cap} cap"
@@ -806,6 +909,26 @@ def _json_decisions(data: Any) -> list[Decision] | None:
     return decisions
 
 
+_DECISION_OBJECT_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _salvaged_decisions(text: str) -> list[Decision]:
+    """The complete decision objects in a JSON reply that does not parse
+    as a whole — one a model's output limit cut off mid-object, as seen
+    with qwen3 judging eight findings. Each ``{...}`` holding an id and
+    a keep is a decision; the cut-off one is left for the judge to ask
+    about again."""
+    decisions = []
+    for match in _DECISION_OBJECT_RE.finditer(text):
+        try:
+            found = _json_decisions([json.loads(match.group(0))])
+        except ValueError:
+            continue
+        if found:
+            decisions.extend(found)
+    return decisions
+
+
 def parse_judgements(text: str) -> list[Decision]:
     """The judge's decisions from its reply, however it wrote them.
 
@@ -813,6 +936,7 @@ def parse_judgements(text: str) -> list[Decision]:
     or surrounded by prose, as is a bare JSON list of decisions. A
     decision's ``score`` (or ``grade``) is optional: a reply without
     grades reads as before, and its decisions rank as the default grade.
+    A reply cut off mid-JSON gives the decisions that are complete.
     Failing JSON, every line that reads as ``<id> <keep|ignore|true|false>
     <reason>`` is an ungraded decision. Raises ``ValueError`` when no
     decision can be read."""
@@ -826,7 +950,9 @@ def parse_judgements(text: str) -> list[Decision]:
                 decisions = None
             if decisions is not None:
                 return decisions
-    decisions = []
+    decisions = _salvaged_decisions(text)
+    if decisions:
+        return decisions
     for line in text.splitlines():
         match = _LINE_RE.match(line)
         if match is None:
@@ -884,10 +1010,14 @@ class FindingsJudge(AbstractSegment):
     ``model`` resolve exactly as ``llmAgent``'s do — asked for JSON and
     read leniently (:func:`parse_judgements`); from Python, ``generate``
     (prompt text in, reply text out) replaces the model, and subclasses
-    may override :meth:`decide`. When the model fails or leaves a
-    finding undecided, the finding is kept with a reason starting
-    ``not judged``; only a model that cannot be built at all raises
-    (a ``ValueError``). Model calls are taken one at a time.
+    may override :meth:`decide`. A finding the reply left undecided
+    (the model skipped it, or its output limit cut the JSON off) is
+    asked about again, with the other undecided ones, up to ``retries``
+    times; ``batch_size`` judges at most that many findings per model
+    call. When the model fails or still leaves a finding undecided, the
+    finding is kept with a reason starting ``not judged``; only a model
+    that cannot be built at all raises (a ``ValueError``). Model calls
+    are taken one at a time.
     """
 
     def __init__(
@@ -931,8 +1061,20 @@ class FindingsJudge(AbstractSegment):
             "From Python: a callable taking the prompt and returning the "
             "reply text, used instead of the model",
         ] = None,
+        retries: Annotated[
+            int,
+            "How many times to ask again about the findings a reply left "
+            "undecided (skipped, or cut off by the model's output limit)",
+        ] = 1,
+        batch_size: Annotated[
+            int | None,
+            "Judge at most this many findings per model call (None = all of "
+            "a call's findings at once)",
+        ] = None,
     ) -> None:
         super().__init__()
+        self.retries = max(0, retries)
+        self.batch_size = max(1, batch_size) if batch_size is not None else None
         self.findings_field = findings_field
         self.question_field = question_field
         self.looking_for_field = looking_for_field
@@ -1029,17 +1171,39 @@ class FindingsJudge(AbstractSegment):
             labelled.append((f"f{len(labelled) + 1}", finding))
         if not labelled:
             return []
-        prompt = self.prompt(question, looking_for, known, labelled)
-        try:
-            decisions = self.decide(prompt, labelled)
-        except _JudgeModelError:
-            raise
-        except Exception as exc:
-            logger.warning("Judging findings failed; keeping them", exc_info=True)
-            decisions = {}
-            undecided = f"not judged: {_one_line(exc)}"
-        else:
-            undecided = "not judged: the model gave no decision for it"
+        decisions: dict[str, Decision] = {}
+        undecided = "not judged: the model gave no decision for it"
+        size = self.batch_size or len(labelled)
+        for start in range(0, len(labelled), size):
+            batch = labelled[start : start + size]
+            # The findings this batch has yet to decide on: all of them,
+            # then whatever each reply skipped or cut off, asked about
+            # again on their own with their labels unchanged.
+            for _attempt in range(self.retries + 1):
+                pending = [(label, f) for label, f in batch if label not in decisions]
+                if not pending:
+                    break
+                prompt = self.prompt(question, looking_for, known, pending)
+                try:
+                    found = self.decide(prompt, pending)
+                except _JudgeModelError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "Judging findings failed; keeping them", exc_info=True
+                    )
+                    undecided = f"not judged: {_one_line(exc)}"
+                    break
+                wanted = {label for label, _ in pending}
+                decisions.update(
+                    (label, d) for label, d in found.items() if label in wanted
+                )
+                if any(label not in decisions for label, _ in pending):
+                    logger.info(
+                        "The judge left %d of %d finding(s) undecided",
+                        sum(1 for label, _ in pending if label not in decisions),
+                        len(pending),
+                    )
         judged = []
         for label, finding in labelled:
             decision = decisions.get(label)
@@ -1132,40 +1296,54 @@ class JudgeFindings(HookProvider):
         if session is None:
             return
         stash = event.invocation_state.get(FINDINGS_KEY) or {}
-        findings = stash.pop(str(event.tool_use.get("toolUseId")), None)
+        found = stash.pop(str(event.tool_use.get("toolUseId")), None)
         result = event.result
-        if findings is None or result.get("status") == "error":
+        if found is None or result.get("status") == "error":
             if result.get("status") != "error":
                 event.result = _with_note(result, session.turns_note())
             return
+        if not isinstance(found, FoundFindings):  # a bare list of findings
+            found = FoundFindings(list(found))
         args = event.tool_use.get("input") or {}
         looking_for = (
             str(args.get("looking_for") or "") if isinstance(args, dict) else ""
         )
         # Off the event loop: the judge makes a blocking model call.
         text = await asyncio.to_thread(
-            self.process, findings, looking_for, str(event.tool_use.get("name", ""))
+            self.process,
+            found.findings,
+            looking_for,
+            str(event.tool_use.get("name", "")),
+            found.below_floor,
         )
         event.result = {**result, "content": [{"text": text}]}
 
     def process(
-        self, findings: list[Finding], looking_for: str = "", tool: str = ""
+        self,
+        findings: list[Finding],
+        looking_for: str = "",
+        tool: str = "",
+        below_floor: int = 0,
     ) -> str:
         """Run one call's *findings* through the session (and the judge,
-        if any) and return the reply the model reads."""
+        if any) and return the reply the model reads. *below_floor* is
+        how many results the tool's score floor left out: they are
+        reported, not judged — with nothing above the floor the judge is
+        not called at all."""
         session = self.session
         if session is None:
-            return render_findings(findings)
+            return render_findings(findings, below_floor=below_floor)
         with session.lock:
             session.calls += 1
+            floor = f", {below_floor} below the score floor" if below_floor else ""
             if self.judge is None:
                 fids = list(dict.fromkeys(session.register(f) for f in findings))
                 fresh = sum(1 for fid in fids if not session.is_decided(fid))
                 session.tell(
-                    f"agent ← {tool}: {len(fids)} finding(s), {fresh} undecided. "
+                    f"agent ← {tool}: {len(fids)} finding(s), {fresh} undecided{floor}. "
                     + session.status_line()
                 )
-                return session.show_undecided(fids, what=tool)
+                return session.show_undecided(fids, what=tool, below_floor=below_floor)
             judgements = self.judge.judge(
                 findings,
                 session.question,
@@ -1198,10 +1376,15 @@ class JudgeFindings(HookProvider):
                 f"finding(s), kept {len(kept)}, ignored {len(ignored)}"
                 + (f", {len(displaced)} displaced" if displaced else "")
                 + (f", {passed_over} passed over" if passed_over else "")
-                + f". {session.status_line()}"
+                + f"{floor}. {session.status_line()}"
             )
             return session.reply(
-                kept, ignored, passed_over, what=tool, displaced=displaced
+                kept,
+                ignored,
+                passed_over,
+                what=tool,
+                displaced=displaced,
+                below_floor=below_floor,
             )
 
 
@@ -1224,6 +1407,7 @@ def finding_tool(
     name: str | None = None,
     description: str | None = None,
     register: bool = True,
+    min_score: float | None = None,
 ) -> Any:
     """Make *func* a finding tool: an agent tool whose result is findings.
 
@@ -1242,8 +1426,13 @@ def finding_tool(
 
     *name* is the tool's name (default: the function's), *description*
     overrides the docstring's. The tool is registered with
-    ``register_agent_tool`` unless *register* is false. Works bare or
-    with arguments::
+    ``register_agent_tool`` unless *register* is false. *min_score* is
+    a floor on the findings' scores (:attr:`Finding.search_score`: a
+    search hit's similarity, higher is better): results under it are left out
+    before the judge sees them, and the model is told how many — so a
+    call with nothing above the floor costs no judge call. Findings
+    with no score always pass; the scale is the tool's, so the floor
+    belongs with the tool. Works bare or with arguments::
 
         @finding_tool
         def search_notes(query: str, looking_for: str = "") -> list[Finding]:
@@ -1253,7 +1442,11 @@ def finding_tool(
 
         def decorate(f: Callable[..., Any]) -> Any:
             return finding_tool(
-                f, name=name, description=description, register=register
+                f,
+                name=name,
+                description=description,
+                register=register,
+                min_score=min_score,
             )
 
         return decorate
@@ -1271,11 +1464,15 @@ def finding_tool(
         session = state.get(SESSION_KEY) if isinstance(state, dict) else None
         if session is not None and (refusal := session.guard(tool_name)):
             return str(refusal)
-        found = as_findings(func(**kwargs), label=tool_name)
+        found, below_floor = below_score_floor(
+            as_findings(func(**kwargs), label=tool_name), min_score
+        )
         if isinstance(state, dict) and context is not None:
             stash = state.setdefault(FINDINGS_KEY, {})
-            stash[str(context.tool_use.get("toolUseId"))] = found
-        return render_findings(found)
+            stash[str(context.tool_use.get("toolUseId"))] = FoundFindings(
+                found, below_floor
+            )
+        return render_findings(found, below_floor=below_floor)
 
     # The schema Strands builds is func's, plus the context it injects.
     params = list(signature.parameters.values())

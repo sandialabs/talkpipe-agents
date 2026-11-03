@@ -58,7 +58,7 @@ from .findings import (
     FindingsSession,
     JudgeFindings,
 )
-from .hooks import AgentHooks, AgentRetryStrategy
+from .hooks import AgentHooks, AgentRetryStrategy, Deadline
 from .models import build_agent_model
 from .models import model_params as parse_model_params
 from .replies import agent_limits, ask_and_clean
@@ -120,6 +120,12 @@ class LLMAgent(AbstractSegment):
             int | None,
             "Soft cap on input + output tokens per item (None = no cap)",
         ] = None,
+        max_seconds: Annotated[
+            float | None,
+            "Wall-clock budget per item in seconds: once spent, further tool "
+            "calls are refused and the agent is told to answer from what it "
+            "has (None = no budget; max_turns stays the hard cap)",
+        ] = None,
         temperature: Annotated[float | None, "The sampling temperature"] = None,
         model_params: Annotated[
             dict | str | None,
@@ -179,6 +185,11 @@ class LLMAgent(AbstractSegment):
         self.max_output_tokens = max_output_tokens
         self.max_total_tokens = max_total_tokens
         self.limits = agent_limits(max_turns, max_output_tokens, max_total_tokens)
+        # Validates max_seconds now, so a bad value fails when the script compiles.
+        self._deadline = (
+            Deadline(max_seconds, self.tell) if max_seconds is not None else None
+        )
+        self.max_seconds = max_seconds
         self.temperature = temperature
         # parsed here so malformed JSON fails when the script compiles
         self.model_params = parse_model_params(model_params)
@@ -243,6 +254,7 @@ class LLMAgent(AbstractSegment):
             callback_handler=None,
             hooks=[
                 AgentHooks(self.tell),
+                *([self._deadline] if self._deadline else []),
                 *([self._loop] if self._loop else []),
                 *self.hooks,
             ],
@@ -291,8 +303,10 @@ class LLMAgent(AbstractSegment):
         session = self._session = loop.session = FindingsSession(
             str(question),
             max_kept=self.max_kept,
-            # The segment's own cap, so the countdown matches the limit.
+            # The segment's own caps, so the countdown matches the limit
+            # and the outcome names the budget the Deadline hook enforces.
             max_turns=self.max_turns,
+            max_seconds=self.max_seconds,
             tell=self._progress,
         )
         try:

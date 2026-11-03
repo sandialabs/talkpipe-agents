@@ -19,7 +19,7 @@ from typing import Any
 from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
 
-from .hooks import AgentHooks, AgentRetryStrategy
+from .hooks import AgentHooks, AgentRetryStrategy, Deadline
 from .models import build_agent_model
 from .replies import agent_limits, ask_and_clean
 from .support import teller
@@ -71,7 +71,10 @@ class AgentChat:
     - ``max_turns``: model calls per ``ask()`` (a turn may hold several
       tool calls; ``None`` = no cap; default 8); ``max_output_tokens`` /
       ``max_total_tokens``: soft token budgets per ``ask()`` (``None`` =
-      no cap). Hitting one ends the exchange with a visible notice, and
+      no cap); ``max_seconds``: a wall-clock budget per ``ask()`` after
+      which tool calls are refused and the agent is told to answer from
+      what it has (``None`` = no budget). Hitting a turn or token limit
+      ends the exchange with a visible notice, and
       ``last_result.stop_reason`` says which (``"limit_turns"``, …). A
       tool that raises a Strands interrupt (human input required) also
       ends the exchange with a notice; ``last_result.interrupts`` holds it,
@@ -96,14 +99,17 @@ class AgentChat:
         max_turns: int | None = 8,
         max_output_tokens: int | None = None,
         max_total_tokens: int | None = None,
+        max_seconds: float | None = None,
         summarizing: bool = False,
         progress: Callable[[str], None] | None = None,
     ):
         self.max_turns = max_turns
         self.max_output_tokens = max_output_tokens
         self.max_total_tokens = max_total_tokens
+        self.max_seconds = max_seconds
         self.limits = agent_limits(max_turns, max_output_tokens, max_total_tokens)
         self.tell = teller(progress, logger)
+        deadline = [Deadline(max_seconds, self.tell)] if max_seconds is not None else []
         self.last_result: Any = None
         manager = SummarizingConversationManager() if summarizing else None
         self._agent = Agent(
@@ -115,7 +121,7 @@ class AgentChat:
             system_prompt=system_prompt,
             callback_handler=None,
             conversation_manager=manager,
-            hooks=[AgentHooks(self.tell)],
+            hooks=[AgentHooks(self.tell), *deadline],
             retry_strategy=AgentRetryStrategy(),
         )
 

@@ -114,12 +114,17 @@ class ScriptTool(AbstractSegment):
 
 
 def make_finding_tool(
-    name: str, description: str, script: str, input_description: str = _INPUT_DOC
+    name: str,
+    description: str,
+    script: str,
+    input_description: str = _INPUT_DOC,
+    min_score: float | None = None,
 ) -> Any:
     """A finding tool named *name* whose body is the chatterlang
     *script*: like :func:`make_script_tool`, but every item the script
     emits is a finding, and the tool also takes ``looking_for`` (passed
-    to the judge, not to the script). Not registered; see
+    to the judge, not to the script). *min_score* is the tool's score
+    floor, as for :func:`finding_tool`. Not registered; see
     ``findingTool`` for that."""
     _check_compiles(name, script)
 
@@ -130,7 +135,9 @@ def make_finding_tool(
         f"{description}\n\nArgs:\n    text: {input_description}\n"
         f"    looking_for: {_LOOKING_FOR_DOC}\n"
     )
-    return finding_tool(run, name=name, description=description, register=False)
+    return finding_tool(
+        run, name=name, description=description, register=False, min_score=min_score
+    )
 
 
 @register_segment("findingTool")
@@ -155,6 +162,11 @@ class FindingTool(AbstractSegment):
         input_description: Annotated[
             str | None, "Documentation for the tool's text argument"
         ] = None,
+        min_score: Annotated[
+            float | None,
+            "Score floor: search results scoring under it are left out before "
+            "judging, and the model is told how many (None = no floor)",
+        ] = None,
     ):
         super().__init__()
         self.tool = register_agent_tool(
@@ -163,6 +175,7 @@ class FindingTool(AbstractSegment):
                 description,
                 script,
                 input_description=input_description or _INPUT_DOC,
+                min_score=min_score,
             )
         )
 

@@ -27,7 +27,7 @@ from talkpipe_agents import (
     register_agent_tool,
 )
 from talkpipe_agents.findings import render_findings
-from talkpipe_agents.testing import ScriptedJudge
+from talkpipe_agents.testing import ScriptedJudge, ScriptedToolErrorWarning
 
 QUESTION = "What is the capital of France?"
 
@@ -776,3 +776,248 @@ def test_make_finding_tool_documents_looking_for():
     assert set(properties) == {"text", "looking_for"}
     with pytest.raises(Exception, match="does not compile"):
         make_finding_tool("bad", "x", "| noSuchSegment")
+
+
+# -- judge robustness: cut-off replies, re-asking, batches --------------------
+
+TRUNCATED_REPLY = (
+    '{"decisions": [{"id": "f1", "keep": true, "reason": "the answer"}, '
+    '{"id": "f2", "keep": false, "reason": "fruit"}, {"id": "f3", "keep": tr'
+)
+
+
+def test_a_reply_cut_off_mid_json_gives_the_complete_decisions():
+    assert [(d.id, d.keep, d.reason) for d in parse_judgements(TRUNCATED_REPLY)] == [
+        ("f1", True, "the answer"),
+        ("f2", False, "fruit"),
+    ]
+
+
+def test_undecided_findings_are_asked_about_again_on_their_own():
+    prompts: list[str] = []
+
+    def generate(prompt):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return TRUNCATED_REPLY  # the model's output limit cut f3 off
+        return '{"decisions": [{"id": "f3", "keep": false, "reason": "repeats f1"}]}'
+
+    judged = FindingsJudge(generate=generate).judge(NOTES, QUESTION)
+    assert [(j.finding.label, j.keep, j.reason) for j in judged] == [
+        ("geography", True, "the answer"),
+        ("fruit", False, "fruit"),
+        ("history", False, "repeats f1"),
+    ]
+    assert len(prompts) == 2
+    # The second prompt holds only the undecided finding, under its own label.
+    assert "[f3] history" in prompts[1]
+    assert "[f1]" not in prompts[1]
+    assert "[f2]" not in prompts[1]
+
+
+def test_retries_zero_keeps_an_undecided_finding_after_one_call():
+    prompts: list[str] = []
+
+    def generate(prompt):
+        prompts.append(prompt)
+        return TRUNCATED_REPLY
+
+    judged = FindingsJudge(generate=generate, retries=0).judge(NOTES, QUESTION)
+    assert [j.keep for j in judged] == [True, False, True]
+    assert judged[2].reason == "not judged: the model gave no decision for it"
+    assert len(prompts) == 1
+    # With the default one retry, a model that keeps skipping it is asked twice.
+    prompts.clear()
+    FindingsJudge(generate=generate).judge(NOTES, QUESTION)
+    assert len(prompts) == 2
+
+
+def test_batch_size_judges_a_few_findings_per_call():
+    prompts: list[str] = []
+
+    def generate(prompt):
+        prompts.append(prompt)
+        labels = [line[1:3] for line in prompt.splitlines() if line.startswith("[f")]
+        return "\n".join(f"{label} keep ok" for label in labels)
+
+    judged = FindingsJudge(generate=generate, batch_size=2).judge(NOTES, QUESTION)
+    assert [(j.finding.label, j.keep) for j in judged] == [
+        ("geography", True),
+        ("fruit", True),
+        ("history", True),
+    ]
+    assert len(prompts) == 2
+    assert "[f1] geography" in prompts[0]
+    assert "[f2] fruit" in prompts[0]
+    assert "[f3] history" in prompts[1]
+    assert "[f1]" not in prompts[1]
+
+
+# -- the score floor ---------------------------------------------------------
+
+
+def _hit(score: float, text: str) -> SearchResult:
+    return SearchResult(score=score, doc_id=text, document={"content": text})
+
+
+def test_a_finding_knows_its_search_score():
+    assert Finding.from_search_result(_hit(0.42, "x")).search_score == 0.42
+    assert Finding("x", meta={"score": 3}).search_score == 3.0
+    assert Finding("x").search_score is None
+    assert Finding("x", meta={"score": True}).search_score is None
+
+
+@finding_tool(register=False, min_score=0.5)
+def search_scored(query: str, looking_for: str = "") -> list[SearchResult]:
+    """Search with scores.
+
+    Args:
+        query: What to search for.
+        looking_for: What the answer still lacks.
+    """
+    if query == "nothing good":
+        return [_hit(0.1, "weak one"), _hit(0.2, "weak two")]
+    return [
+        _hit(0.9, "Paris is the capital of France."),
+        _hit(0.3, "Bananas are yellow."),
+        _hit(0.5, "France's capital has been Paris since 987."),
+    ]
+
+
+def test_hits_under_the_floor_are_left_out_before_the_judge(scripted_model):
+    scripted_model.call("search_scored", query="capital")
+    scripted_model.call("enough_information", reason="known")
+    scripted_model.say("Paris.")
+    judge = ScriptedJudge(keep=lambda f: "Paris" in f.text)
+    step = _step(judge=judge, tools=[search_scored])
+    assert list(step([QUESTION])) == ["Paris."]
+    reply = scripted_model.tool_results[0].text
+    assert "2 new finding(s) from search_scored: kept 2, ignored 0." in reply
+    assert "1 result(s) scored below the tool's floor and were left out." in reply
+    assert "Bananas" not in reply
+    # The judge was shown only the findings above the floor.
+    assert len(judge.batches) == 1
+    assert len(judge.batches[0]) == 2
+    assert "Bananas" not in judge.prompts[0]
+    assert [f.search_score for f in step.last_outcome.findings] == [0.9, 0.5]
+    assert "2 finding(s), kept 2, ignored 0, 1 below the score floor" in "\n".join(
+        step.last_outcome.trace
+    )
+
+
+def test_nothing_above_the_floor_costs_no_judge_call(scripted_model):
+    scripted_model.call("search_scored", query="nothing good")
+    scripted_model.say("Nothing relevant was found.")
+    judge = ScriptedJudge(keep=lambda f: True)
+    step = _step(judge=judge, tools=[search_scored], max_turns=3)
+    list(step([QUESTION]))
+    reply = scripted_model.tool_results[0].text
+    assert reply.startswith(
+        "No new findings from search_scored. 2 result(s) scored below the "
+        "tool's floor and were left out. Try different terms."
+    )
+    assert "2 of 3 turns left." in reply
+    assert judge.batches == []
+    assert step.last_outcome.note.startswith("Agent found nothing relevant to keep")
+
+
+def test_the_floor_applies_without_a_session_and_by_hand(scripted_model):
+    scripted_model.call("search_scored", query="nothing good").say("ok")
+    list(LLMAgent(source="scripted", model="any", tools=[search_scored])(["q"]))
+    assert scripted_model.tool_results[0].text == (
+        "Nothing found. 2 result(s) scored below the tool's floor and were left out."
+    )
+    scripted_model.call("search_scored", query="capital").say("ok")
+    step = _step(judge=False, findings=True, tools=[search_scored])
+    list(step([QUESTION]))
+    reply = scripted_model.tool_results[1].text
+    assert "2 finding(s) from search_scored." in reply
+    assert "1 result(s) scored below the tool's floor" in reply
+    assert len(step.last_outcome.trace)
+    assert step.last_outcome.undecided == 2
+
+
+def test_a_finding_tool_script_takes_a_score_floor(scripted_model):
+    from talkpipe.chatterlang import register_segment
+    from talkpipe.pipe import core
+
+    @register_segment("scoredHits")
+    @core.segment()
+    def scored_hits(items):
+        for _ in items:
+            yield _hit(0.9, "Paris is the capital of France.")
+            yield _hit(0.1, "Bananas are yellow.")
+
+    script = """
+    findingTool[name="search_hits", description="Search.", min_score=0.5,
+                script="| scoredHits"];
+    INPUT FROM echo[data="What is the capital of France?"]
+    | llmAgent[source="scripted", model="any", tools=["search_hits"], judge=True]
+    """
+    scripted_model.call("search_hits", text="capital", looking_for="")
+    scripted_model.say("f1 keep the answer")
+    scripted_model.say("Paris.")
+    assert list(compiler.compile(script)()) == ["Paris."]
+    reply = scripted_model.tool_results[0].text
+    assert "1 new finding(s) from search_hits: kept 1, ignored 0." in reply
+    assert "1 result(s) scored below the tool's floor" in reply
+
+
+# -- the time budget ---------------------------------------------------------
+
+
+class _Clock:
+    def __init__(self, step: float = 0.0) -> None:
+        self.now, self.step = 0.0, step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
+def test_the_session_knows_when_its_time_budget_is_spent():
+    clock = _Clock()
+    session = FindingsSession(QUESTION, max_seconds=10, clock=clock)
+    fid = session.register(NOTES[0])
+    session.apply(fid, True, "the answer")
+    assert not session.timed_out
+    assert session.guard("search_notes") == ""
+    clock.now = 10
+    assert session.timed_out
+    assert session.stop_note == "the 10-second time budget is spent"
+    assert session.guard("search_notes").startswith(
+        "The search is over — the 10-second time budget is spent."
+    )
+    assert session.outcome("end_turn").note.startswith(
+        "Agent hit its 10-second time budget: kept 1 finding"
+    )
+    # Saying it had enough still counts as the intended ending.
+    session.enough = True
+    assert session.outcome("end_turn").note.startswith("Agent judged it had enough")
+
+
+def test_max_seconds_refuses_tool_calls_once_spent(scripted_model, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "monotonic", _Clock(step=20.0))
+    scripted_model.call("search_notes", query="capital")
+    scripted_model.say("I ran out of time before finding anything.")
+    lines: list[str] = []
+    step = _step(max_seconds=30, max_turns=4, progress=lines.append)
+    with pytest.warns(ScriptedToolErrorWarning, match="time budget is spent"):
+        answer = list(step([QUESTION]))
+    assert answer == ["I ran out of time before finding anything."]
+    result = scripted_model.tool_results[0]
+    assert result.status == "error"
+    assert "The 30-second time budget is spent" in result.text
+    assert "stop calling tools and answer now from what you have" in result.text
+    assert searched == []  # the tool itself never ran
+    assert "agent: stopped at the time budget (30 s)" in lines
+    assert step.last_outcome.note.startswith("Agent hit its 30-second time budget")
+
+
+def test_max_seconds_must_be_positive():
+    with pytest.raises(ValueError, match="max_seconds must be positive"):
+        _step(max_seconds=0)
+    with pytest.raises(ValueError, match="max_seconds must be a number"):
+        _step(max_seconds="soon")
