@@ -19,6 +19,7 @@ from talkpipe_agents import (
     FindingsJudge,
     FindingsSession,
     JudgeFindings,
+    Judgement,
     LLMAgent,
     as_findings,
     finding_tool,
@@ -1107,3 +1108,16 @@ def test_a_verdict_with_nothing_kept_is_not_passed_on(scripted_model):
     (item,) = step([{"q": QUESTION}])
     assert "The judge finds" not in scripted_model.tool_results[0].text
     assert item["outcome"].sufficient is False
+
+
+def test_a_judge_returning_a_plain_list_gives_no_verdict(scripted_model):
+    class ListJudge(FindingsJudge):
+        def judge(self, findings, question, looking_for="", known=(), seen=()):
+            return [Judgement(f, True, "fine") for f in as_findings(list(findings))]
+
+    scripted_model.call("search_notes", query="capital").say("Paris.")
+    step = _step(judge=ListJudge(), field="q", set_as="answer", findings_as="outcome")
+    (item,) = step([{"q": QUESTION}])
+    assert "The judge finds" not in scripted_model.tool_results[0].text
+    assert item["outcome"].sufficient is None
+    assert len(item["outcome"].findings) == 2

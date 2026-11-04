@@ -1445,7 +1445,10 @@ class JudgeFindings(HookProvider):
             ignored: list[str] = []
             displaced: list[str] = []
             passed_over = 0
-            session.note_verdict(judgements.enough, judgements.missing)
+            # A judge subclass may return a plain list: then no verdict.
+            enough = getattr(judgements, "enough", None)
+            missing = str(getattr(judgements, "missing", "") or "")
+            session.note_verdict(enough, missing)
             for judgement in judgements:
                 weakest = None
                 if judgement.keep and session.at_capacity:
@@ -1470,9 +1473,9 @@ class JudgeFindings(HookProvider):
                 + f"{floor}. {session.status_line()}"
                 + (
                     " Judge: enough to answer."
-                    if judgements.enough
+                    if enough
                     else f" Judge: still missing {session.missing}."
-                    if judgements.enough is False and session.missing
+                    if enough is False and session.missing
                     else ""
                 )
             )
