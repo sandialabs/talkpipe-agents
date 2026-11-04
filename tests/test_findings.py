@@ -1120,4 +1120,4 @@ def test_a_judge_returning_a_plain_list_gives_no_verdict(scripted_model):
     (item,) = step([{"q": QUESTION}])
     assert "The judge finds" not in scripted_model.tool_results[0].text
     assert item["outcome"].sufficient is None
-    assert len(item["outcome"].findings) == 2
+    assert len(item["outcome"].findings) == len(NOTES)
