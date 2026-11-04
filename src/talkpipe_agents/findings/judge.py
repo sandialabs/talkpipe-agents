@@ -28,7 +28,7 @@ from ..models import build_agent_model
 from ..models import model_params as parse_model_params
 from ..support import strip_think
 from .finding import DEFAULT_MAX_CHARS, Finding, as_findings, preview
-from .session import MAX_SCORE, MIN_SCORE
+from .session import MAX_SCORE, MIN_SCORE, Need
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +40,16 @@ def _one_line(exc: BaseException, limit: int = 160) -> str:
 
 # -- judging -----------------------------------------------------------------
 
-JUDGE_SYSTEM_PROMPT = """You judge findings for an agent that gathers information to answer a question. You are shown the question; optionally what the tool call that produced these findings was looking for, and what is already known from findings kept earlier; then the findings, each labelled f1, f2, and so on.
+JUDGE_SYSTEM_PROMPT = """You judge findings for an agent that gathers information to answer a question. You are shown the question; optionally what the tool call that produced these findings was looking for, what is already known from findings kept earlier, and the list of facts the answer needs as worked out so far; then the findings, each labelled f1, f2, and so on.
 
 Decide for every finding whether to keep it or ignore it. The default is keep: keep a finding that bears on the question, even in part, or that supplies what the call was looking for. Overlapping coverage, examples, supporting detail, and another source saying the same thing are reasons to keep, not to ignore. Ignore a finding only when it is about something else or merely shares words with the question, or when its text repeats a finding that is already known nearly word for word. Never ignore a finding because another finding in this same list covers similar ground: judge each one against the question on its own. Read the question's terms in their ordinary sense. When unsure, keep.
 
 Also grade each finding's relevance from 1 to 5: 5 answers the question, or a large part of it, directly; 3 is useful supporting material; 1 is barely related. The agent can keep only so many findings, and the grades decide which stay when more are kept than fit, so grade the findings relative to each other.
 
-Reply with one decision per finding, in order, giving the finding's id, keep (true or false), the grade as score, and a short reason: for a kept finding, what it contributes to the answer; for an ignored one, why it does not help. Then say whether what is already known together with the findings you keep would let the question be answered well: enough, true or false, and when false, missing: in one phrase, what the answer still lacks. Reply with JSON only, in this shape and nothing else:
-{"decisions": [{"id": "f1", "keep": true, "score": 4, "reason": "..."}, {"id": "f2", "keep": false, "score": 1, "reason": "..."}], "enough": false, "missing": "..."}"""
+Then list the facts a complete answer needs, one short phrase each: the fact the question asks for; every fact it depends on that the question refers to without stating (which particular thing, person or place is meant; its kind, type or model; the value recorded for it; the rule that applies to it); and each condition the question sets (a day, a budget, a tier, a place) that the answer must check against the findings. What the question itself states as given is not a need. For each fact, cite as found the id of the one finding you keep that states that fact about the particular thing asked. A finding that mentions the topic, states something general, or states it about a different case does not state the fact: then found is null. In particular, a finding about a kind of thing (what MyQ openers support, when cool-season lawns are overseeded, what a tier allows) does not state which kind this particular thing is; that is a separate fact, found only in a finding that names this one. When you are unsure, found is null: a fact wrongly marked found ends the search with a wrong answer, while one marked null only costs the agent another call. When a list of needs is shown, it was worked out on earlier calls: keep every entry and its id, mark found the ones a finding here now states (an entry already marked covered stays covered), and add any new fact the kept findings reveal the answer depends on (a value found that must now be looked up elsewhere). Never drop an entry.
+
+Reply with JSON only, in this shape and nothing else: the needs first, each with its id when it had one, its fact and found (an id or null); then one decision per finding, in order, giving the finding's id, keep (true or false), the grade as score, and a short reason: for a kept finding, what it contributes to the answer; for an ignored one, why it does not help.
+{"needed": [{"id": "N1", "fact": "...", "found": "f2"}, {"fact": "...", "found": null}], "decisions": [{"id": "f1", "keep": true, "score": 4, "reason": "..."}, {"id": "f2", "keep": false, "score": 1, "reason": "..."}]}"""
 
 
 @dataclass
@@ -63,32 +65,42 @@ class Decision:
 
 @dataclass
 class Verdict:
-    """A judge's reply, read: its decisions, and whether what is known
-    plus what it keeps would answer the question (``None`` when the
-    reply did not say) with what the answer still lacks."""
+    """A judge's reply, read: its decisions; the facts the answer needs
+    and which of them a kept finding states (``None`` when the reply gave
+    no list); and the verdict on the whole: ``enough`` and ``missing``.
+    With a list of needs the verdict is derived from it, in code: enough
+    when every fact is found, missing the facts that are not. Without
+    one, ``enough`` and ``missing`` are whatever the reply said (``None``
+    and ``""`` when it said nothing)."""
 
     decisions: list[Decision]
     enough: bool | None = None
     missing: str = ""
+    needs: list[Need] | None = None
 
 
 @dataclass
 class Judgement:
-    """A decision applied to its finding."""
+    """A decision applied to its finding. ``label`` is what the judge
+    called the finding (``f1``, …), so a need's ``found`` can be traced
+    back to it."""
 
     finding: Finding
     keep: bool
     reason: str
     score: int | None = None
+    label: str = ""
 
 
 class Judged(list[Judgement]):
     """The judgements for one call, in order, with the judge's verdict
-    on the whole: ``enough`` (``None`` when it gave none) and
-    ``missing``. A plain list to everything that reads it as one."""
+    on the whole: ``enough`` (``None`` when it gave none), ``missing``,
+    and ``needs`` (the facts the answer needs, ``None`` when the judge
+    listed none). A plain list to everything that reads it as one."""
 
     enough: bool | None = None
     missing: str = ""
+    needs: list[Need] | None = None
 
 
 _KEEP_WORDS = frozenset({"keep", "true", "yes"})
@@ -124,18 +136,41 @@ def _as_score(value: Any) -> int | None:
     return max(MIN_SCORE, min(MAX_SCORE, score))
 
 
+def _json_needs(data: Any) -> list[Need] | None:
+    """The reply's list of needs (``needed`` or ``needs``), or ``None``
+    when it gave none that can be read."""
+    if not isinstance(data, list):
+        return None
+    needs = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        fact = str(entry.get("fact") or entry.get("need") or "").strip()
+        found = entry.get("found", entry.get("finding"))
+        found = None if found in (None, "", False, "null") else str(found).strip()
+        need_id = str(entry.get("id") or "").strip()
+        if fact or need_id:
+            needs.append(Need(fact, found, need_id))
+    return needs or None
+
+
 def _json_verdict(data: Any) -> Verdict | None:
     """The reply's JSON as a verdict: its decisions (a list, bare or under
-    ``decisions``) and, from the object, ``enough`` and ``missing``."""
-    enough, missing = None, ""
+    ``decisions``), its needs, and ``enough`` / ``missing`` — derived from
+    the needs when there are any, else read from the object."""
+    enough, missing, needs = None, "", None
     if isinstance(data, dict):
         enough = _as_keep(data.get("enough", data.get("sufficient")))
         missing = str(data.get("missing") or "")
+        needs = _json_needs(data.get("needed", data.get("needs")))
+        if needs is not None:
+            enough = all(need.covered for need in needs)
+            missing = "; ".join(n.fact for n in needs if not n.covered) or missing
         data = data.get("decisions")
     decisions = _json_decisions(data)
     if decisions is None:
         return None
-    return Verdict(decisions, enough, missing)
+    return Verdict(decisions, enough, missing, needs)
 
 
 def _json_decisions(data: Any) -> list[Decision] | None:
@@ -232,6 +267,31 @@ def parse_verdict(text: str) -> Verdict:
             reply = reply[:119] + "…"
         raise ValueError(f"the judge's reply held no decisions: {reply!r}")
     return Verdict(decisions)
+
+
+def _merged_needs(earlier: list[Need] | None, later: list[Need]) -> list[Need]:
+    """*later*'s needs over *earlier*'s, matched by id, else by fact: a
+    fact one reply found stays found, and a need no later reply repeats
+    is kept rather than dropped."""
+    merged = list(earlier or [])
+    for need in later:
+        match = next(
+            (
+                m
+                for m in merged
+                if (need.id and m.id == need.id)
+                or (need.fact and m.fact.lower() == need.fact.lower())
+            ),
+            None,
+        )
+        if match is None:
+            merged.append(need)
+            continue
+        if match.found is None and need.found is not None:
+            match.found = need.found
+        if not match.fact:
+            match.fact = need.fact
+    return merged
 
 
 def _label_of(decision_id: str) -> str:
@@ -383,9 +443,12 @@ class FindingsJudge(AbstractSegment):
         looking_for: str,
         known: Iterable[str],
         labelled: list[tuple[str, Finding]],
+        needs: Iterable[Need] = (),
     ) -> str:
         """The prompt for one judgement: the question, what the call was
-        looking for, what is already known, and the labelled findings."""
+        looking for, what is already known, the facts the answer needs as
+        worked out on earlier calls (each with its id and whether a kept
+        finding covers it), and the labelled findings."""
         lines = [f"Question: {question.strip()}"]
         if looking_for.strip():
             lines.append(f"This call is looking for: {looking_for.strip()}")
@@ -394,6 +457,13 @@ class FindingsJudge(AbstractSegment):
         lines.extend(f"- {note}" for note in notes)
         if not notes:
             lines.append("- nothing yet")
+        needs = list(needs)
+        if needs:
+            lines.append("The answer needs (from earlier calls):")
+            lines.extend(
+                f"- {need.id}: {need.fact} ({'covered' if need.covered else 'not yet found'})"
+                for need in needs
+            )
         lines.append("Findings:")
         for label, finding in labelled:
             head = f"[{label}]" + (f" {finding.label}" if finding.label else "")
@@ -419,13 +489,17 @@ class FindingsJudge(AbstractSegment):
         looking_for: str = "",
         known: Iterable[str] = (),
         seen: Iterable[str] = (),
+        needs: Iterable[Need] = (),
     ) -> Judged:
         """Judge *findings* for *question*, in order. Findings whose key is
         in *seen* are left out; a finding the model gave no decision for,
         or every finding when the model failed, is kept with a reason that
-        starts "not judged". The list's ``enough`` and ``missing`` are the
-        judge's verdict on what is kept, from the last reply that gave one
-        (``None`` when none did)."""
+        starts "not judged". *needs* are the facts the answer needs as
+        worked out on earlier calls, shown to the judge to update. The
+        list's ``needs`` are the judge's list from this call (merged over
+        its replies: a fact one reply found stays found), and ``enough``
+        and ``missing`` its verdict on what is kept, from the last reply
+        that gave one (``None`` when none did)."""
         skip = {str(key) for key in seen}
         labelled: list[tuple[str, Finding]] = []
         for finding in as_findings(list(findings or [])):
@@ -447,7 +521,7 @@ class FindingsJudge(AbstractSegment):
                 pending = [(label, f) for label, f in batch if label not in decisions]
                 if not pending:
                     break
-                prompt = self.prompt(question, looking_for, known, pending)
+                prompt = self.prompt(question, looking_for, known, pending, needs)
                 try:
                     found = self.decide(prompt, pending)
                 except _JudgeModelError:
@@ -459,7 +533,13 @@ class FindingsJudge(AbstractSegment):
                     undecided = f"not judged: {_one_line(exc)}"
                     break
                 if isinstance(found, Verdict):
-                    if found.enough is not None:
+                    if found.needs is not None:
+                        judged.needs = _merged_needs(judged.needs, found.needs)
+                        judged.enough = all(n.covered for n in judged.needs)
+                        judged.missing = "; ".join(
+                            n.fact for n in judged.needs if not n.covered
+                        )
+                    elif found.enough is not None:
                         judged.enough, judged.missing = found.enough, found.missing
                     found = {_label_of(d.id): d for d in found.decisions}
                 wanted = {label for label, _ in pending}
@@ -475,11 +555,15 @@ class FindingsJudge(AbstractSegment):
         for label, finding in labelled:
             decision = decisions.get(label)
             if decision is None:
-                judged.append(Judgement(finding, True, undecided))
+                judged.append(Judgement(finding, True, undecided, label=label))
             else:
                 judged.append(
                     Judgement(
-                        finding, decision.keep, decision.reason.strip(), decision.score
+                        finding,
+                        decision.keep,
+                        decision.reason.strip(),
+                        decision.score,
+                        label=label,
                     )
                 )
         return judged

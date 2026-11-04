@@ -173,15 +173,17 @@ class JudgeFindings(HookProvider):
                 looking_for,
                 session.known_notes(),
                 session.seen_keys(),
+                # Passed only when there are any, so a judge subclass with
+                # the older signature still works until a list exists.
+                **({"needs": session.needs} if session.needs else {}),
             )
             kept: list[str] = []
             ignored: list[str] = []
             displaced: list[str] = []
             passed_over = 0
-            # A judge subclass may return a plain list: then no verdict.
-            enough = getattr(judgements, "enough", None)
-            missing = str(getattr(judgements, "missing", "") or "")
-            session.note_verdict(enough, missing)
+            # The judge's label for each finding -> the session's id, so a
+            # need's "found" can be traced to the finding it names.
+            labels: dict[str, str] = {}
             for judgement in judgements:
                 weakest = None
                 if judgement.keep and session.at_capacity:
@@ -191,6 +193,8 @@ class JudgeFindings(HookProvider):
                         passed_over += 1
                         continue
                 fid = session.register(judgement.finding)
+                if judgement.label:
+                    labels[judgement.label] = fid
                 if session.is_decided(fid):
                     continue
                 if weakest is not None:
@@ -198,12 +202,30 @@ class JudgeFindings(HookProvider):
                     displaced.append(weakest)
                 session.apply(fid, judgement.keep, judgement.reason, judgement.score)
                 (kept if judgement.keep else ignored).append(fid)
+            # The verdict: derived from the judge's list of needs when it gave
+            # one, else as the judge said. A judge subclass may return a plain
+            # list: then no verdict.
+            needs = getattr(judgements, "needs", None)
+            if needs is not None:
+                session.note_needs(needs, labels)
+            else:
+                session.note_verdict(
+                    getattr(judgements, "enough", None),
+                    str(getattr(judgements, "missing", "") or ""),
+                )
+            enough = (
+                session.sufficient
+                if (needs is not None)
+                else getattr(judgements, "enough", None)
+            )
+            summary = session.needs_summary()
             session.tell(
                 f"agent ← {tool}: {len(kept) + len(ignored) + passed_over} "
                 f"finding(s), kept {len(kept)}, ignored {len(ignored)}"
                 + (f", {len(displaced)} displaced" if displaced else "")
                 + (f", {passed_over} passed over" if passed_over else "")
                 + f"{floor}. {session.status_line()}"
+                + (f" Judge: {summary}." if summary else "")
                 + (
                     " Judge: enough to answer."
                     if enough

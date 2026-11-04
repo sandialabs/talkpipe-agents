@@ -21,10 +21,12 @@ from talkpipe_agents import (
     JudgeFindings,
     Judgement,
     LLMAgent,
+    Need,
     as_findings,
     finding_tool,
     make_finding_tool,
     parse_judgements,
+    parse_verdict,
     register_agent_tool,
 )
 from talkpipe_agents.findings import render_findings
@@ -1112,7 +1114,7 @@ def test_a_verdict_with_nothing_kept_is_not_passed_on(scripted_model):
 
 def test_a_judge_returning_a_plain_list_gives_no_verdict(scripted_model):
     class ListJudge(FindingsJudge):
-        def judge(self, findings, question, looking_for="", known=(), seen=()):
+        def judge(self, findings, question, looking_for="", known=(), seen=(), **kw):
             return [Judgement(f, True, "fine") for f in as_findings(list(findings))]
 
     scripted_model.call("search_notes", query="capital").say("Paris.")
@@ -1268,3 +1270,166 @@ def test_the_session_names_its_ending_and_the_hook_seeds_without_an_agent():
     fresh.declare_enough("done")
     assert fresh.ending() == "enough"
     assert fresh.outcome().ending == "enough"
+
+
+# -- the facts the answer needs ---------------------------------------------
+
+
+def test_parse_verdict_reads_the_needs_and_derives_the_verdict():
+    reply = """{"needed": [{"fact": "the capital", "found": "f1"},
+                           {"fact": "since when", "found": null}],
+                "decisions": [{"id": "f1", "keep": true, "score": 5, "reason": "r"}],
+                "enough": true}"""
+    verdict = parse_verdict(reply)
+    assert [(n.fact, n.found, n.id) for n in verdict.needs] == [
+        ("the capital", "f1", ""),
+        ("since when", None, ""),
+    ]
+    # Derived from the list, whatever the model said about enough.
+    assert verdict.enough is False
+    assert verdict.missing == "since when"
+    all_found = parse_verdict(
+        '{"needed": [{"id": "N1", "fact": "the capital", "found": "f1"}],'
+        ' "decisions": [{"id": "f1", "keep": true}]}'
+    )
+    assert (all_found.enough, all_found.missing) == (True, "")
+    # A reply without a list reads as before.
+    assert parse_verdict('[{"id": "f1", "keep": true}]').needs is None
+
+
+def test_the_judge_merges_the_needs_of_its_replies():
+    replies = iter(
+        [
+            (
+                '{"needed": [{"fact": "a", "found": "f1"}, {"fact": "b", "found": null}],'
+                ' "decisions": [{"id": "f1", "keep": true}]}'
+            ),
+            (
+                '{"needed": [{"fact": "b", "found": "f2"}],'
+                ' "decisions": [{"id": "f2", "keep": true}]}'
+            ),
+        ]
+    )
+    judge = FindingsJudge(generate=lambda prompt: next(replies))
+    judged = judge.judge(NOTES[:2], QUESTION)
+    assert [(n.fact, n.found) for n in judged.needs] == [("a", "f1"), ("b", "f2")]
+    assert judged.enough is True
+    assert [j.label for j in judged] == ["f1", "f2"]
+
+
+def _needs(*facts_found):
+    """A ScriptedJudge ``needs`` rule returning the same list every call."""
+    return lambda labelled: [Need(fact, found) for fact, found in facts_found]
+
+
+def test_the_session_derives_the_verdict_from_the_needs(scripted_model):
+    judge = ScriptedJudge(
+        keep={"geography", "history"},
+        needs=_needs(("the capital", "f1"), ("since when", None)),
+    )
+    scripted_model.call("search_notes", query="capital").say("Paris.")
+    step = _step(judge=judge, field="q", set_as="a", findings_as="outcome")
+    (item,) = step([{"q": QUESTION}])
+    reply = scripted_model.tool_results[0].text
+    assert (
+        "The answer needs:\n- the capital: stated by f1\n- since when: not yet found"
+        in reply
+    )
+    assert "The judge finds the answer still lacks: since when." in reply
+    outcome = item["outcome"]
+    assert (outcome.sufficient, outcome.missing) == (False, "since when")
+    assert any(
+        "Judge: needs 2, 1 found. Judge: still missing since when." in line
+        for line in outcome.trace
+    )
+
+
+def test_needs_carry_across_calls_and_the_judge_is_shown_them(scripted_model):
+    calls = []
+
+    def needs(labelled):
+        calls.append([label for label, _ in labelled])
+        if len(calls) == 1:
+            return [Need("the capital", "f1"), Need("since when", None)]
+        # The second call: the judge keeps the ids and marks the gap found.
+        return [Need("the capital", "known", "N1"), Need("since when", "f1", "N2")]
+
+    judge = ScriptedJudge(keep={"geography", "history", "lookup_fact"}, needs=needs)
+    scripted_model.call("search_notes", query="capital")
+    scripted_model.call("lookup_fact", topic="the date")
+    scripted_model.say("Paris, since 987.")
+    step = _step(
+        judge=judge,
+        tools=["search_notes", "lookup_fact"],
+        field="q",
+        set_as="a",
+        findings_as="outcome",
+    )
+    (item,) = step([{"q": QUESTION}])
+    # The second judgement saw the list worked out on the first.
+    assert "The answer needs (from earlier calls):" in judge.prompts[1]
+    assert "- N1: the capital (covered)" in judge.prompts[1]
+    assert "- N2: since when (not yet found)" in judge.prompts[1]
+    outcome = item["outcome"]
+    assert outcome.sufficient is True
+    assert outcome.missing == ""
+    assert "call enough_information now" in scripted_model.tool_results[1].text
+
+
+def test_a_need_is_only_covered_by_a_kept_finding():
+    session = FindingsSession(QUESTION, max_kept=1)
+    judge = ScriptedJudge(
+        keep={"fruit"}, needs=_needs(("the capital", "f1"), ("bananas", "f2"))
+    )
+    loop = JudgeFindings(session, judge)
+    loop.process(NOTES[:2], "", "search_notes")
+    # f1 (geography) was ignored, so citing it covers nothing; f2 is kept.
+    assert [(n.fact, n.found) for n in session.needs] == [
+        ("the capital", None),
+        ("bananas", "f2"),
+    ]
+    assert session.sufficient is False
+    assert session.missing == "the capital"
+
+
+def test_coverage_is_lost_when_the_finding_is_displaced():
+    session = FindingsSession(QUESTION, max_kept=1)
+    grades = {"geography": 2, "history": 5}
+    judge = ScriptedJudge(
+        keep=lambda f: (True, "", grades[f.label]),
+        needs=lambda labelled: [Need("the capital", labelled[0][0])],
+    )
+    loop = JudgeFindings(session, judge)
+    loop.process(NOTES[:1], "", "search_notes")
+    assert session.sufficient is True
+    # The better-graded history note displaces geography; the need it
+    # covered is open again, and the judge's new citation covers it.
+    loop.process(NOTES[2:], "", "search_notes")
+    assert session.kept_ids == ["f2"]
+    assert [(n.fact, n.found) for n in session.needs] == [("the capital", "f2")]
+
+
+def test_first_tool_ends_the_run_only_when_every_need_is_found(scripted_model):
+    judge = ScriptedJudge(
+        keep={"geography", "history"},
+        needs=_needs(("the capital", "f1"), ("since when", None)),
+    )
+    scripted_model.call("enough_information", reason="fine").say("Paris.")
+    step = _step(
+        judge=judge, first_tool="search_notes", findings_as="o", field="q", set_as="a"
+    )
+    (item,) = step([{"q": QUESTION}])
+    # Not short-circuited: one fact was not found, so the agent ran.
+    assert item["o"].ending == "enough"
+    assert "The judge says it still lacks: since when." in _opening(scripted_model)
+
+
+def test_a_judge_without_a_needs_list_still_gives_a_prose_verdict(scripted_model):
+    judge = ScriptedJudge(keep={"geography"}, enough=True)
+    scripted_model.say("Paris.")
+    step = _step(
+        judge=judge, first_tool="search_notes", findings_as="o", field="q", set_as="a"
+    )
+    (item,) = step([{"q": QUESTION}])
+    assert item["o"].ending == "judge_enough"
+    assert step._loop is not None

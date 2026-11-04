@@ -65,7 +65,7 @@ from strands.types.streaming import StreamEvent
 from strands.types.tools import ToolChoice, ToolSpec
 
 from . import models
-from .findings import Decision, Finding, FindingsJudge, Verdict
+from .findings import Decision, Finding, FindingsJudge, Need, Verdict
 
 TextTurn = tuple[Literal["text"], str]
 ToolTurn = tuple[Literal["tool"], str, dict[str, Any]]
@@ -295,11 +295,13 @@ class ScriptedJudge(FindingsJudge):
         error: Exception | None = None,
         enough: bool | None = None,
         missing: str = "",
+        needs: Callable[[list[tuple[str, Finding]]], list[Need]] | None = None,
     ) -> None:
         super().__init__()
         self._rule = keep if callable(keep) else frozenset(keep)
         self._error = error
         self._enough, self._missing = enough, missing
+        self._needs = needs
         self.batches: list[list[str]] = []
         self.prompts: list[str] = []
 
@@ -325,6 +327,14 @@ class ScriptedJudge(FindingsJudge):
                 keep, reason = finding.label in self._rule, ""
             reason = reason or ("relevant" if keep else "not relevant")
             decisions[label] = Decision(label, bool(keep), reason, score)
+        if self._needs is not None:
+            needs = self._needs(labelled)
+            return Verdict(
+                list(decisions.values()),
+                all(n.covered for n in needs),
+                "; ".join(n.fact for n in needs if not n.covered),
+                needs,
+            )
         if self._enough is None:
             return decisions
         return Verdict(list(decisions.values()), self._enough, self._missing)

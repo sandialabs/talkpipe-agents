@@ -86,6 +86,7 @@ from .session import (
     MIN_SCORE,
     FindingsOutcome,
     FindingsSession,
+    Need,
 )
 
 __all__ = [
@@ -111,6 +112,7 @@ __all__ = [
     "JudgeFindings",
     "Judged",
     "Judgement",
+    "Need",
     "Verdict",
     "as_finding",
     "as_findings",

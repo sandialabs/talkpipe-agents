@@ -333,10 +333,13 @@ nothing has been called yet). An application that answers in a step
 of its own, from the kept findings, skips the agent entirely when
 `accept_verdict` returns true; talkpipe-vault's agent search does so.
 
-The judge's `enough` is advice when the agent runs and a decision here.
-Whether it is strict enough to be trusted with that decision is the
-application's call to measure; a judge that says enough too readily
-turns multi-step questions into single-search answers.
+The judge's `enough` is advice when the agent runs and a decision here,
+which is why it is derived from the judge's list of the facts the answer
+needs rather than taken from the model: a judge asked only "is this
+enough?" says yes whenever every chunk it saw was relevant, and turns
+multi-step questions into single-search answers. Whether the list is
+strict enough for a given model is still the application's call to
+measure.
 
 ## `llmAgent` parameters
 
@@ -413,7 +416,9 @@ After each item, `last_outcome` holds a `FindingsOutcome`:
 - `trace`: every progress line;
 - `sufficient` and `missing`: the judge's last verdict on what is kept,
   whether it would answer the question (`None` when the judge gave
-  none) and what the answer still lacks;
+  none) and what the answer still lacks — derived from the judge's list
+  of the facts the answer needs when it gave one (see
+  [The pieces](#the-pieces-for-use-elsewhere));
 - `error` and `undecided`.
 
 ### Answering with talkpipe's RAG segments
@@ -480,15 +485,32 @@ another system with different tools:
   Each JSON decision may carry a `score`, the 1-to-5 relevance grade
   the prompt asks for; a reply without grades reads as before, and its
   decisions rank as the default grade. The reply's object may also
-  carry the judge's verdict on the whole, `enough` (would what is
-  known plus what it keeps answer the question?) and `missing` (in a
-  phrase, what the answer still lacks); `parse_verdict` reads both,
-  and `judge` returns them on its list as `enough` and `missing`
-  (`None` and `""` when the reply gave none). The session passes the
-  verdict on: the tool reply tells the model what the judge finds
-  missing, or to call `enough_information` when the judge finds what
-  is kept sufficient, and the outcome carries it as `sufficient` and
-  `missing`. The agent still decides; the verdict is advice.
+  carry the judge's verdict on the whole. The prompt asks for it as a
+  list of *needs*, `needed`: the facts a complete answer needs — the
+  fact asked for, every fact it depends on that the question refers to
+  without stating (which particular thing is meant, its kind, the value
+  recorded for it), and each condition the question sets — each with
+  `found`, the id of the kept finding that states that fact about the
+  particular thing asked, or `null`. The verdict is then derived in
+  code, not taken from the model: `enough` only when every need is
+  found, `missing` the facts that are not. This is what stops a judge
+  from waving a question through because every chunk it saw was
+  relevant: a finding about a kind of thing (what a class of openers
+  supports) does not state which kind this one is, and the list makes
+  that gap explicit. A reply without the list may still say `enough`
+  and `missing` in prose, which is read as before; `parse_verdict`
+  reads all of it (`Verdict.needs`), and `judge` returns it on its list
+  as `needs`, `enough` and `missing` (`None` and `""` when the reply
+  gave none). The session keeps the list across calls (`session.needs`,
+  ids `N1`, `N2`, …): the judge is shown it on every later call, to
+  mark what a new finding now states and to add facts the kept findings
+  reveal the answer depends on, and a need counts as covered only while
+  the finding that states it is kept. The session passes the verdict
+  on: the tool reply lists the needs and their coverage, tells the model
+  what the judge finds missing, or to call `enough_information` when
+  every need is covered, and the outcome carries it as `sufficient` and
+  `missing`. The agent still decides; the verdict is advice, except for
+  a call judged before the agent (`first_tool`), which the verdict ends.
   Some models ignore a requested output format, so schema-guided
   generation alone is not enough. A reply cut off mid-JSON by the
   model's output limit still yields the decisions that are complete,

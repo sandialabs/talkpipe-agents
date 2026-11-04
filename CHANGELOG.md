@@ -28,7 +28,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The judge gives a verdict on the whole as well as a decision per
   finding: whether what is known plus what it keeps would answer the
   question (`enough`) and, if not, what the answer still lacks
-  (`missing`). `parse_verdict` reads it (`parse_judgements` is
+  (`missing`). The verdict is structural: the judge lists the facts a
+  complete answer needs (`needed`: the fact asked for, the facts it
+  depends on that the question does not state, the conditions it sets),
+  citing for each the kept finding that states it, and `enough` is
+  computed from that list — true only when every fact is found — rather
+  than taken from the model (`Need`, `Verdict.needs`, `Judged.needs`).
+  The session keeps the list across calls (`FindingsSession.needs`,
+  `note_needs`), shows it to the judge on every later call, counts a
+  fact as covered only while its finding is kept, and lists the needs
+  in the tool reply. A reply without the list is read as before. `parse_verdict` reads it (`parse_judgements` is
   unchanged), `FindingsJudge.judge` returns it on its list (`Judged`),
   the tool reply tells the model what the judge finds missing, or to
   call `enough_information` when the judge finds what is kept

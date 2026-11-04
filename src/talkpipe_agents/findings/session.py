@@ -55,6 +55,22 @@ ENDINGS = {
 
 
 @dataclass
+class Need:
+    """One fact the answer needs, as the judge lists it: the fact, the
+    label of the kept finding that states it (``None`` when none does;
+    ``"known"`` when a finding kept earlier did), and the id the session
+    gave it on an earlier call (``""`` for a fact named just now)."""
+
+    fact: str
+    found: str | None = None
+    id: str = ""
+
+    @property
+    def covered(self) -> bool:
+        return self.found is not None
+
+
+@dataclass
 class FindingsOutcome:
     """What a findings run produced: the kept findings (best first by
     the judge's grade, ties in keep order), a one-line note saying how
@@ -145,9 +161,14 @@ class FindingsSession:
         self.enough = False
         self.enough_reason = ""
         self.enough_by = ""
-        # The judge's last verdict on what is kept (see note_verdict).
+        # The judge's last verdict on what is kept (see note_verdict), and
+        # the facts the answer needs as the judge has listed them, each with
+        # the id of the kept finding that states it (see note_needs). With
+        # a list, the verdict is derived from it: enough when every fact is
+        # stated by a finding that is still kept.
         self.sufficient: bool | None = None
         self.missing = ""
+        self.needs: list[Need] = []
         self.lock = threading.RLock()
 
     # -- bookkeeping ---------------------------------------------------------
@@ -267,6 +288,58 @@ class FindingsSession:
         self.sufficient = sufficient
         self.missing = "" if sufficient else missing.strip().rstrip(".")
 
+    def note_needs(self, needs: list[Need], labels: dict[str, str]) -> None:
+        """Record the judge's list of the facts the answer needs, and
+        derive the verdict from it. *labels* maps the judge's labels for
+        this call's findings (``f1``, …) to the session's ids. An entry
+        with the id of a need recorded earlier updates it (a fact once
+        found stays found, by its finding's id); any other entry is a new
+        need. A need counts as covered while the finding that states it
+        is kept. The verdict is then enough when every need is covered,
+        and ``missing`` names the facts that are not."""
+        by_id = {need.id: need for need in self.needs}
+        for need in needs:
+            found = self._fid_of(need.found, labels)
+            # An earlier need, by the id it was shown under, or by its
+            # wording when the judge wrote the same fact again without one.
+            known = by_id.get(need.id) or next(
+                (n for n in self.needs if n.fact.lower() == need.fact.lower()), None
+            )
+            if known is None:
+                if not need.fact:
+                    continue
+                known = Need(need.fact, None, f"N{len(self.needs) + 1}")
+                self.needs.append(known)
+                by_id[known.id] = known
+            if found is not None and not self._covers(known):
+                known.found = found
+        uncovered = [need.fact for need in self.needs if not self._covers(need)]
+        self.sufficient = bool(self.needs) and not uncovered
+        self.missing = "; ".join(uncovered)
+
+    def _fid_of(self, found: str | None, labels: dict[str, str]) -> str | None:
+        """The session id of the kept finding the judge cited as *found*:
+        by its label for this call, or directly when the judge cited a
+        session id; ``None`` for no citation or one that is not kept."""
+        if not found:
+            return None
+        label = "".join(ch for ch in found.lower() if ch.isalnum())
+        if label[:1] in ("f", "r") and label[1:].isdigit():
+            label = label[1:]
+        fid = labels.get(f"f{label}" if label.isdigit() else label, f"f{label}")
+        return fid if fid in self.kept_ids else None
+
+    def _covers(self, need: Need) -> bool:
+        return need.found is not None and need.found in self.kept_ids
+
+    def needs_summary(self) -> str:
+        """The needs and their coverage in one phrase, for the trace;
+        empty without a list."""
+        if not self.needs:
+            return ""
+        covered = sum(1 for need in self.needs if self._covers(need))
+        return f"needs {len(self.needs)}, {covered} found"
+
     def accept_verdict(self, reason: str = JUDGE_ENOUGH_REASON) -> bool:
         """End the run on the judge's verdict: when the judge found that
         what is kept would answer the question, and something is kept,
@@ -295,6 +368,15 @@ class FindingsSession:
         if self.missing:
             return f"The judge finds the answer still lacks: {self.missing}."
         return "The judge finds that what is kept does not yet answer the question."
+
+    def needs_notes(self) -> list[str]:
+        """The facts the answer needs, one line each with whether a kept
+        finding states it, for the model's reply; empty without a list."""
+        return [
+            f"- {need.fact}: "
+            + (f"stated by {need.found}" if self._covers(need) else "not yet found")
+            for need in self.needs
+        ]
 
     # -- stopping ------------------------------------------------------------
 
@@ -528,6 +610,8 @@ class FindingsSession:
         if below_floor:
             lines.append(floor_note(below_floor))
         lines.append(self._known_summary())
+        if notes := self.needs_notes():
+            lines.append("The answer needs:\n" + "\n".join(notes))
         if verdict := self.verdict_note:
             lines.append(verdict)
         if self.at_capacity:
