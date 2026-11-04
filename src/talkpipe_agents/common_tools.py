@@ -19,6 +19,9 @@ truncation notice, and ``fetch_url`` speaks only http(s). The
 calculator evaluates arithmetic through an AST walker rather than
 ``eval``. The notepad keeps its notes in the agent's own Strands
 ``AgentState``, so every agent has its own pad with no host wiring.
+``read_file``, ``search_files`` and ``fetch_url`` also come as finding
+tools (``*_findings``) that return a file or page in passages and a
+search's matches grouped by file, for the findings loop to judge.
 """
 
 from __future__ import annotations
@@ -44,10 +47,14 @@ from talkpipe.data.extraction import (
 )
 from talkpipe.data.html import downloadURLSegment, htmlToTextSegment
 
+from .findings import DEFAULT_MAX_CHARS, Finding, finding_tool
 from .tools import register_agent_tool
 
 _MAX_SEARCH_FILE_BYTES = 1_000_000  # search_files skips bigger files
 _DEFAULT_MAX_CHARS = 10000  # read_file / fetch_url output clip
+# The finding variants' passage size: what a reply shows of a finding, so
+# a passage is never clipped on its way to the model.
+_DEFAULT_PASSAGE_CHARS = DEFAULT_MAX_CHARS
 
 # Every optional parameter below also accepts None as "use the default":
 # models (llama3.2 among them) send null for optional arguments they
@@ -298,6 +305,40 @@ def list_files(directory: str | None = ".", pattern: str | None = "*") -> str:
     return "\n".join(lines) if lines else "(no matching entries)"
 
 
+def _search_matches(
+    pattern: str,
+    directory: str | None,
+    file_glob: str | None,
+    max_matches: int | None,
+) -> tuple[Path, list[tuple[str, int, str]], bool]:
+    """The ``(relative path, line number, stripped line)`` matches of
+    *pattern* under *directory*, in file order, with the resolved root
+    and whether the match limit cut the search short."""
+    directory, file_glob = directory or ".", file_glob or "*"
+    if max_matches is None:
+        max_matches = 50
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"invalid regular expression: {exc}") from exc
+    root = Path(directory).expanduser()
+    if not root.is_dir():
+        raise ValueError(f"not a directory: {directory}")
+    root = root.resolve()  # listFiles yields resolved paths
+    matches: list[tuple[str, int, str]] = []
+    for path in map(Path, _list_files_recursive(str(root / "**" / file_glob))):
+        if path.stat().st_size > _MAX_SEARCH_FILE_BYTES:
+            continue
+        rel = os.path.relpath(path, root)
+        text = _file_text(_read_file_or_skip, str(path))
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if compiled.search(line):
+                matches.append((rel, lineno, line.strip()))
+                if len(matches) >= max_matches:
+                    return root, matches, True
+    return root, matches, False
+
+
 @register_agent_tool
 @strands_tool
 def search_files(
@@ -320,28 +361,10 @@ def search_files(
         file_glob: Glob pattern for which files to search, e.g. "*.md".
         max_matches: Stop after this many matching lines.
     """
-    directory, file_glob = directory or ".", file_glob or "*"
-    if max_matches is None:
-        max_matches = 50
-    try:
-        compiled = re.compile(pattern)
-    except re.error as exc:
-        raise ValueError(f"invalid regular expression: {exc}") from exc
-    root = Path(directory).expanduser()
-    if not root.is_dir():
-        raise ValueError(f"not a directory: {directory}")
-    root = root.resolve()  # listFiles yields resolved paths
-    lines: list[str] = []
-    for path in map(Path, _list_files_recursive(str(root / "**" / file_glob))):
-        if path.stat().st_size > _MAX_SEARCH_FILE_BYTES:
-            continue
-        rel = os.path.relpath(path, root)
-        text = _file_text(_read_file_or_skip, str(path))
-        for lineno, line in enumerate(text.splitlines(), 1):
-            if compiled.search(line):
-                lines.append(f"{rel}:{lineno}: {line.strip()}")
-                if len(lines) >= max_matches:
-                    return "\n".join(lines) + "\n…[match limit reached]"
+    _, matches, limited = _search_matches(pattern, directory, file_glob, max_matches)
+    lines = [f"{rel}:{lineno}: {line}" for rel, lineno, line in matches]
+    if limited:
+        return "\n".join(lines) + "\n…[match limit reached]"
     return "\n".join(lines) if lines else "(no matches)"
 
 
@@ -372,6 +395,142 @@ def fetch_url(url: str, max_chars: int | None = _DEFAULT_MAX_CHARS) -> str:
     if not url.startswith(("http://", "https://")):
         raise ValueError("only http:// and https:// URLs are supported")
     return _clip(_fetch_url(url), max_chars)
+
+
+# --- finding variants -------------------------------------------------
+#
+# The same reads and fetches, returning findings instead of one string,
+# so that under the findings loop (``llmAgent[judge=True]``) each file's
+# matches, and each passage of a file or page, is judged on its own,
+# deduplicated across calls and cited by its source. Outside the loop
+# they are ordinary tools whose findings the model reads as text.
+
+
+def _passages(text: str, max_chars: int | None) -> list[str]:
+    """*text* in passages of at most *max_chars* characters, cut at
+    paragraph breaks (blank lines) where there are any, and inside a
+    paragraph only when it alone is longer than the limit."""
+    if max_chars is None or max_chars <= 0:
+        max_chars = _DEFAULT_PASSAGE_CHARS
+    passages: list[str] = []
+    current = ""
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        if current and len(current) + 2 + len(paragraph) > max_chars:
+            passages.append(current)
+            current = ""
+        while len(paragraph) > max_chars:
+            if current:
+                passages.append(current)
+                current = ""
+            passages.append(paragraph[:max_chars])
+            paragraph = paragraph[max_chars:].lstrip()
+        current = f"{current}\n\n{paragraph}" if current else paragraph
+    if current:
+        passages.append(current)
+    return passages
+
+
+def _passage_findings(
+    text: str, label: str, source: str, max_chars: int | None
+) -> list[Finding]:
+    passages = _passages(text, max_chars)
+    return [
+        Finding(
+            passage,
+            label=f"{label} [{i}/{len(passages)}]" if len(passages) > 1 else label,
+            source=source,
+            meta={"passage": i, "passages": len(passages)},
+        )
+        for i, passage in enumerate(passages, 1)
+    ]
+
+
+@finding_tool
+def read_file_findings(
+    path: str,
+    looking_for: str = "",
+    passage_chars: int | None = _DEFAULT_PASSAGE_CHARS,
+) -> list[Finding]:
+    """Read a file in passages, each returned as a separate finding, so
+    the relevant parts of a long document can be kept and the rest
+    ignored. Reads the same formats as read_file (text, markdown, HTML,
+    Word, PDF, CSV, JSON, JSONL; anything else as plain text).
+
+    Args:
+        path: Path to the file ("~" is expanded).
+        looking_for: In one phrase, what this call should find that the
+            answer still lacks.
+        passage_chars: The most characters per passage; passages break at
+            paragraphs where possible.
+    """
+    path = os.path.expanduser(path)
+    text = _file_text(_read_file, path)
+    return _passage_findings(text, os.path.basename(path), path, passage_chars)
+
+
+@finding_tool
+def search_files_findings(
+    pattern: str,
+    directory: str | None = ".",
+    file_glob: str | None = "*",
+    max_matches: int | None = 50,
+    looking_for: str = "",
+) -> list[Finding]:
+    """Search the files under a directory (recursively) for a regular
+    expression. Each file with a match is one finding holding its
+    matching lines as "line: text", so files can be kept or ignored one
+    by one. Files are read as read_file reads them (Word, PDF and CSV by
+    their text); hidden directories, unreadable files and files over
+    1 MB are skipped.
+
+    Args:
+        pattern: A Python regular expression to search for.
+        directory: The directory to search under: "." (the default) is the
+            current directory; "~" is expanded.
+        file_glob: Glob pattern for which files to search, e.g. "*.md".
+        max_matches: Stop after this many matching lines in all.
+        looking_for: In one phrase, what this call should find that the
+            answer still lacks.
+    """
+    root, matches, limited = _search_matches(pattern, directory, file_glob, max_matches)
+    by_file: dict[str, list[tuple[int, str]]] = {}
+    for rel, lineno, line in matches:
+        by_file.setdefault(rel, []).append((lineno, line))
+    findings = []
+    for rel, lines in by_file.items():
+        source = str(root / rel)
+        text = "\n".join(f"{lineno}: {line}" for lineno, line in lines)
+        key = f"{source}:" + ",".join(str(lineno) for lineno, _ in lines)
+        findings.append(Finding(text, label=rel, source=source, key=key))
+    if limited and findings:
+        findings[-1].text += "\n…[match limit reached]"
+    return findings
+
+
+@finding_tool
+def fetch_url_findings(
+    url: str,
+    looking_for: str = "",
+    passage_chars: int | None = _DEFAULT_PASSAGE_CHARS,
+) -> list[Finding]:
+    """Fetch a web page or other http(s) resource and return its text in
+    passages, each a separate finding, so the relevant parts of a long
+    page can be kept and the rest ignored. HTML is reduced to its
+    readable text, as fetch_url does.
+
+    Args:
+        url: The http:// or https:// URL to fetch.
+        looking_for: In one phrase, what this call should find that the
+            answer still lacks.
+        passage_chars: The most characters per passage; passages break at
+            paragraphs where possible.
+    """
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("only http:// and https:// URLs are supported")
+    return _passage_findings(_fetch_url(url), url, url, passage_chars)
 
 
 # --- notepad ----------------------------------------------------------

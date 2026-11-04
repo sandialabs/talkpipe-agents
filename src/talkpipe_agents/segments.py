@@ -59,6 +59,7 @@ from .findings import (
     JudgeFindings,
 )
 from .hooks import AgentHooks, AgentRetryStrategy, Deadline
+from .memory import memory_manager
 from .models import build_agent_model
 from .models import model_params as parse_model_params
 from .replies import agent_limits, ask_and_clean
@@ -173,6 +174,13 @@ class LLMAgent(AbstractSegment):
             list | None,
             "From Python: more Strands hook providers for every agent",
         ] = None,
+        memory: Annotated[
+            Any,
+            "From Python: Strands memory stores (a SearchMemoryStore over a "
+            "talkpipe search, say), singly or as a list, whose best matches for "
+            "each item are put before the model without a tool call; or a "
+            "MemoryManager configured by hand",
+        ] = None,
     ) -> None:
         super().__init__()
         self.model = model
@@ -201,6 +209,7 @@ class LLMAgent(AbstractSegment):
         self.last_result: Any = None
         self._agent: Agent | None = None
         self.hooks = list(hooks or [])
+        self.memory = memory_manager(memory)
         self.max_kept = max_kept
         self.question_field = question_field
         self.findings_as = findings_as
@@ -260,6 +269,7 @@ class LLMAgent(AbstractSegment):
             ],
             retry_strategy=AgentRetryStrategy(),
             state=self.state,
+            memory_manager=self.memory,
         )
 
     def _ask(self, agent: Agent, prompt: str) -> str:

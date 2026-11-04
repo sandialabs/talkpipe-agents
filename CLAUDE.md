@@ -20,7 +20,9 @@ design ("Putting Agents in their Place").
   `JudgeFindings` hook, the `enough_information`/`keep_finding`/
   `ignore_finding` session tools; on with `llmAgent[judge=True]`), `common_tools.py` (the generic tool
   suite: calculator, time/date, regex, read-only files, `fetch_url`,
-  notepad, kept in the agent's Strands state), `hooks.py`
+  their finding variants, notepad, kept in the agent's Strands state),
+  `memory.py` (`SearchMemoryStore`: a talkpipe search as a Strands
+  memory store, `llmAgent`/`AgentChat` `memory=`), `hooks.py`
   (`AgentHooks`: progress lines + leak scrubbing as Strands stores
   messages), `replies.py` (`ask_and_clean` under Strands `limits`, with
   the empty-reply retry), `support.py` (`teller`, `strip_think`,

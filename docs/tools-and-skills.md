@@ -142,7 +142,7 @@ directly, mixed with names as you like.
 
 ## Shipped tools
 
-Sixteen generic tools come with the layer, registered under their own
+Nineteen generic tools come with the layer, registered under their own
 names, so a script grants any of them with `tools=[...]` and nothing
 else. Each keeps deliberate bounds:
 
@@ -171,6 +171,7 @@ the agent-facing bounds above.
 | `list_files` | list a directory's entries, with sizes, filtered by glob |
 | `search_files` | recursive grep — regex over files read as `read_file` reads them, `path:line: text` output |
 | `fetch_url` | fetch an http(s) resource; HTML is reduced to its readable text |
+| `read_file_findings` / `search_files_findings` / `fetch_url_findings` | the same reads as findings: a file in passages, matches grouped by file, a page in passages, for [the findings loop](findings.md) to judge, deduplicate and cite |
 | `save_note` / `read_notes` | a scratch pad kept in the agent's Strands `AgentState` — one pad per conversation in `AgentChat`, one per segment in `llmAgent` (carried across the items of a stream) |
 | `summarize_notes` | a compact overview of the pad — counts, sizes, clipped previews — for surveying memory without reading it all |
 | `update_note` / `delete_note` / `clear_notes` | revise or expunge memory: replace a note in place, delete one (numbers stay stable), or wipe the pad |
@@ -345,6 +346,44 @@ INPUT FROM "What does https://example.com/ say?"
 
 The model calls `fetch_url(url="https://example.com/")` and is told the
 page's readable text, which begins `Example Domain`.
+
+### Finding variants of the file and web tools
+
+**`read_file_findings`**, **`search_files_findings`** and
+**`fetch_url_findings`** read and fetch as the three tools above do,
+but return findings: a file or page in passages of at most 1000
+characters (`passage_chars`), cut at paragraph breaks, and a search's
+matches grouped by file, one finding per file. Under the findings loop
+(`llmAgent[judge=True]`) each is judged on its own, so the relevant
+passages of a long document or the files that matter are kept and the
+rest ignored, a file already seen is not sent again, and the answer
+can cite the path or URL. Without the loop they are ordinary tools: the
+model reads their findings as numbered text, which is what the
+examples below show.
+
+```
+INPUT FROM "Which file here mentions the car registration, and what else does it say?"
+| llmAgent[source="ollama", model="gpt-oss",
+           tools=["search_files_findings", "read_file_findings"]]
+| print
+```
+
+The model calls `search_files_findings(pattern="car registration",
+directory=".")` and is told one finding per matching file, here
+`[1] notes.txt` followed by `2: Renew the car registration before the
+30th.`; it then calls `read_file_findings(path="notes.txt")` and is
+told the file's passages, here the one finding `[1] notes.txt` with the
+file's text.
+
+```
+INPUT FROM "What does https://example.com/ say?"
+| llmAgent[source="ollama", model="gpt-oss", tools=["fetch_url_findings"]]
+| print
+```
+
+The model calls `fetch_url_findings(url="https://example.com/")` and is
+told the page in passages, here the one finding `[1] https://example.com/`
+whose text begins `Example Domain`.
 
 ### Notepad
 

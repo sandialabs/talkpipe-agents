@@ -37,6 +37,9 @@ SHIPPED = frozenset(
         "list_files",
         "search_files",
         "fetch_url",
+        "read_file_findings",
+        "search_files_findings",
+        "fetch_url_findings",
         "save_note",
         "read_notes",
         "summarize_notes",
@@ -146,6 +149,31 @@ EXAMPLES: dict[tuple[str, ...], Example] = {
     ),
     ("fetch_url",): Example(
         [Call("fetch_url", {"url": "https://example.com/"}, ["Example Domain"])],
+        "It is the Example Domain placeholder page.",
+    ),
+    ("search_files_findings", "read_file_findings"): Example(
+        [
+            Call(
+                "search_files_findings",
+                {"pattern": "car registration", "directory": "."},
+                ["[1] notes.txt", "2: Renew the car registration before the 30th."],
+            ),
+            Call(
+                "read_file_findings",
+                {"path": "notes.txt"},
+                ["[1] notes.txt", re.compile(re.escape(" ".join(NOTES.split())))],
+            ),
+        ],
+        "notes.txt, which also notes a dentist visit.",
+    ),
+    ("fetch_url_findings",): Example(
+        [
+            Call(
+                "fetch_url_findings",
+                {"url": "https://example.com/"},
+                ["[1] https://example.com/", "Example Domain"],
+            )
+        ],
         "It is the Example Domain placeholder page.",
     ),
     (

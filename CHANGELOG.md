@@ -7,6 +7,22 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Finding variants of the file and web tools: `read_file_findings`
+  (a file in passages of at most `passage_chars` characters, 1000 by
+  default, cut at paragraph breaks), `fetch_url_findings` (the same for a page) and
+  `search_files_findings` (one finding per file with a match, holding
+  its matching lines). Under the findings loop each passage or file is
+  judged on its own, deduplicated across calls and cited by its path or
+  URL; outside it they are ordinary tools. `read_file`, `search_files`
+  and `fetch_url` are unchanged.
+- `SearchMemoryStore`: a talkpipe search (a `TextSearchable` or a
+  callable taking the query and a limit) as a Strands memory store, and
+  `memory=` on `llmAgent` and `AgentChat` (from Python) to install one
+  or more: each item's best matches are put before the model in a
+  `<memory>` block, without a tool call and outside the conversation
+  history. `min_score` floors the hits; the manager's `search_memory`
+  tool is left off so the agent's own searches still go through its
+  finding tools and the judge. `memory_manager()` builds the manager.
 - `max_seconds` on `llmAgent` and `AgentChat`: a wall-clock budget per
   item (per `ask()`). Once it is spent, every further tool call is
   cancelled before it runs with a reply telling the model to answer

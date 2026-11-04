@@ -20,6 +20,7 @@ from strands import Agent
 from strands.agent.conversation_manager import SummarizingConversationManager
 
 from .hooks import AgentHooks, AgentRetryStrategy, Deadline
+from .memory import memory_manager
 from .models import build_agent_model
 from .replies import agent_limits, ask_and_clean
 from .support import teller
@@ -84,6 +85,10 @@ class AgentChat:
       instead of Strands' default sliding window.
     - ``progress``: a one-line-message callable for ``agent → tool(args)``
       progress lines; defaults to this module's logger at INFO.
+    - ``memory``: Strands memory stores (a ``SearchMemoryStore`` over a
+      talkpipe search, say), singly or as a list, whose best matches for
+      each message are put before the model without a tool call; or a
+      ``MemoryManager`` configured by hand.
     """
 
     def __init__(
@@ -102,6 +107,7 @@ class AgentChat:
         max_seconds: float | None = None,
         summarizing: bool = False,
         progress: Callable[[str], None] | None = None,
+        memory: Any = None,
     ):
         self.max_turns = max_turns
         self.max_output_tokens = max_output_tokens
@@ -123,6 +129,7 @@ class AgentChat:
             conversation_manager=manager,
             hooks=[AgentHooks(self.tell), *deadline],
             retry_strategy=AgentRetryStrategy(),
+            memory_manager=memory_manager(memory),
         )
 
     @property

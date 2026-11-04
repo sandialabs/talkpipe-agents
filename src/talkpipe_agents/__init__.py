@@ -33,6 +33,9 @@ directly for Python composition.
 - ``segments`` — the ``llmAgent`` chatterlang segment.
 - ``chat`` — ``AgentChat``, a thin multi-turn wrapper for interactive
   sessions (what a chat UI drives).
+- ``memory`` — ``SearchMemoryStore``, a talkpipe search as a Strands
+  memory store: its best matches for each message are put before the
+  model without a tool call (``llmAgent``/``AgentChat`` ``memory=``).
 - ``hooks`` — ``AgentHooks`` and ``AgentRetryStrategy``, the Strands
   hook providers both entry points install: per-tool-call progress
   lines, scrubbing of leaked tool-call syntax as messages are stored,
@@ -59,12 +62,15 @@ from .common_tools import (
     days_between,
     delete_note,
     fetch_url,
+    fetch_url_findings,
     list_files,
     read_file,
+    read_file_findings,
     read_notes,
     regex_extract,
     save_note,
     search_files,
+    search_files_findings,
     summarize_notes,
     update_note,
 )
@@ -85,6 +91,7 @@ from .findings import (
     parse_judgements,
 )
 from .hooks import AgentHooks, Deadline
+from .memory import SearchMemoryStore, memory_manager
 from .models import agent_model_sources, build_agent_model, register_agent_model
 from .replies import agent_limits, ask_and_clean
 
@@ -118,6 +125,7 @@ __all__ = [
     "Judgement",
     "LLMAgent",
     "ScriptTool",
+    "SearchMemoryStore",
     "UnknownAgentToolError",
     "__version__",
     "agent_limits",
@@ -134,6 +142,7 @@ __all__ = [
     "delete_note",
     "enough_information",
     "fetch_url",
+    "fetch_url_findings",
     "finding_tool",
     "ignore_finding",
     "keep_finding",
@@ -141,8 +150,10 @@ __all__ = [
     "make_ask_user",
     "make_finding_tool",
     "make_script_tool",
+    "memory_manager",
     "parse_judgements",
     "read_file",
+    "read_file_findings",
     "read_notes",
     "regex_extract",
     "register_agent_model",
@@ -150,6 +161,7 @@ __all__ = [
     "resolve_agent_tools",
     "save_note",
     "search_files",
+    "search_files_findings",
     "strip_think",
     "strip_tool_leak",
     "summarize_notes",

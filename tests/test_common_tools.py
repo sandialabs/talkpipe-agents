@@ -24,10 +24,13 @@ from talkpipe_agents import (
     current_time,
     days_between,
     fetch_url,
+    fetch_url_findings,
     list_files,
     read_file,
+    read_file_findings,
     regex_extract,
     search_files,
+    search_files_findings,
 )
 
 
@@ -41,6 +44,9 @@ def test_suite_is_registered_by_name():
         "list_files",
         "search_files",
         "fetch_url",
+        "read_file_findings",
+        "search_files_findings",
+        "fetch_url_findings",
         "save_note",
         "read_notes",
         "summarize_notes",
@@ -432,3 +438,103 @@ def test_agent_calls_calculator_by_name(scripted_model):
     assert results
     assert results[0]["status"] == "success"
     assert "42" in json.dumps(results[0]["content"])
+
+
+# --- finding variants -------------------------------------------------
+#
+# The same reads, as findings: one per file with matches, one per
+# passage of a file or page, so the findings loop can judge, deduplicate
+# and cite them. Exercised directly and once through a judged agent.
+
+
+def _raw(tool):
+    """The function under a finding tool (``finding_tool`` keeps it as the
+    wrapper's ``__wrapped__``), to call for its findings rather than
+    their rendering."""
+    return tool.__wrapped__.__wrapped__
+
+
+def test_search_files_findings_groups_matches_by_file(tmp_path):
+    (tmp_path / "a.txt").write_text("needle one\nplain\nneedle two\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.txt").write_text("needle three\n")
+    (tmp_path / "c.txt").write_text("nothing\n")
+    found = _raw(search_files_findings)("needle", str(tmp_path))
+    assert [f.label for f in found] == ["a.txt", "sub/b.txt"]
+    assert found[0].text == "1: needle one\n3: needle two"
+    assert found[0].source == str(tmp_path.resolve() / "a.txt")
+    assert found[0].key.endswith("a.txt:1,3")
+    assert found[1].text == "3: needle three".replace("3:", "1:")
+    assert _raw(search_files_findings)("absent", str(tmp_path)) == []
+
+
+def test_search_files_findings_notes_the_match_limit(tmp_path):
+    (tmp_path / "many.txt").write_text("hit\n" * 10)
+    found = _raw(search_files_findings)("hit", str(tmp_path), max_matches=3)
+    assert len(found) == 1
+    assert found[0].text.count("hit") == 3
+    assert found[0].text.endswith("…[match limit reached]")
+
+
+def test_read_file_findings_splits_at_paragraphs(tmp_path):
+    f = tmp_path / "long.md"
+    f.write_text("first para\n\nsecond para\n\n" + "x" * 30 + "\n\nlast")
+    found = _raw(read_file_findings)(str(f), passage_chars=24)
+    assert [p.text for p in found] == [
+        "first para\n\nsecond para",
+        "x" * 24,
+        "x" * 6 + "\n\nlast",
+    ]
+    assert [p.label for p in found] == [f"long.md [{i}/3]" for i in (1, 2, 3)]
+    assert {p.source for p in found} == {str(f)}
+    assert found[0].meta == {"passage": 1, "passages": 3}
+    # A short file is one finding, labelled with the file name alone.
+    (tmp_path / "short.txt").write_text("brief")
+    (only,) = _raw(read_file_findings)(str(tmp_path / "short.txt"))
+    assert (only.label, only.text) == ("short.txt", "brief")
+    assert _raw(read_file_findings)(str(tmp_path / "short.txt"), None)
+
+
+def test_fetch_url_findings_are_passages_of_the_page(monkeypatch):
+    html = (
+        b"<html><body><p>"
+        + b"<p>".join(b"para %d" % i for i in range(6))
+        + b"</body></html>"
+    )
+    seen = _fake_requests(monkeypatch, html, "text/html")
+    found = _raw(fetch_url_findings)("https://example.org/p", passage_chars=20)
+    assert seen == ["https://example.org/p"]
+    assert len(found) > 1
+    assert "".join(p.text for p in found).count("para") == 6
+    assert {p.source for p in found} == {"https://example.org/p"}
+    assert found[0].label == f"https://example.org/p [1/{len(found)}]"
+    with pytest.raises(ValueError, match="http"):
+        _raw(fetch_url_findings)("ftp://example.org/p")
+
+
+def test_the_finding_variants_feed_the_judged_loop(scripted_model, tmp_path):
+    from talkpipe_agents.testing import ScriptedJudge
+
+    (tmp_path / "cats.txt").write_text("cats purr\n")
+    (tmp_path / "dogs.txt").write_text("dogs bark\n")
+    scripted_model.call(
+        "search_files_findings", pattern="purr|bark", directory=str(tmp_path)
+    ).say("Cats purr.")
+    judge = ScriptedJudge(keep={"cats.txt"})
+    step = LLMAgent(
+        source="scripted",
+        model="any",
+        tools=["search_files_findings"],
+        judge=judge,
+        field="q",
+        set_as="answer",
+        findings_as="outcome",
+    )
+    (item,) = step([{"q": "Which animal purrs?"}])
+    assert item["answer"] == "Cats purr."
+    outcome = item["outcome"]
+    assert [f.label for f in outcome.findings] == ["cats.txt"]
+    assert outcome.findings[0].source == str(tmp_path.resolve() / "cats.txt")
+    assert judge.batches == [["cats.txt", "dogs.txt"]]
+    assert "kept 1, ignored 1" in scripted_model.tool_results[0].text
+    assert "[f1] cats.txt (source: " in scripted_model.tool_results[0].text

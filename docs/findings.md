@@ -242,6 +242,61 @@ for `@finding_tool`, for a script that emits search results.
 `make_finding_tool(name, description, script, min_score=…)` builds the
 same tool from Python.
 
+## The file and web tools as finding tools
+
+Three of the shipped tools have finding variants, so a question over a
+folder of documents or the web gets the loop with nothing to write:
+`read_file_findings` returns a file in passages (at most 1000 characters
+each, `passage_chars`, cut at paragraph breaks where there are any),
+`fetch_url_findings` does the same for an http(s) page, and
+`search_files_findings` returns one finding per file with a match,
+holding its matching lines as `line: text`. Each passage or file is
+judged on its own, a passage or file already seen is "already known"
+rather than sent again, and the finding's `source` is the path or URL
+for the answer to cite. They read and fetch exactly as `read_file`,
+`search_files` and `fetch_url` do (the same formats, the same bounds)
+and take `looking_for` like any finding tool; the plain tools stay for
+an agent that wants the text itself.
+
+```
+INPUT FROM "What do the notes in ./docs say about the backup schedule?"
+| llmAgent[source="ollama", model="gpt-oss",
+           tools=["search_files_findings", "read_file_findings"], judge=True]
+| print
+```
+
+## A search index before the agent asks
+
+A talkpipe search can also feed the model before it calls any tool.
+`SearchMemoryStore` wraps a `TextSearchable` (anything with
+`text_search(query, limit)`, such as a `WhooshFullTextIndex`) or a
+callable taking the query and a result limit (for a vector index: embed
+the query, call its `vector_search`) as a [Strands memory
+store](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/memory/).
+Given to `llmAgent` or `AgentChat` as `memory=` (from Python; one
+store, a list, or a `MemoryManager` configured by hand), the store is
+searched with each item (each message, in a chat) and the hits are put
+before the model in a `<memory>` block, without a tool call and without
+entering the conversation history. Each entry carries the hit's label
+and source with its text, so the model can cite them. The manager's own
+`search_memory` tool is left off, so what the agent searches for itself
+still goes through its finding tools and the judge: the index answers
+the plain question up front, and the loop is for what that misses.
+`max_search_results` (default 5) and `min_score` (a floor on the hit's
+score, as for finding tools) bound what is injected.
+
+```python
+from talkpipe.search.whoosh import WhooshFullTextIndex
+
+from talkpipe_agents import LLMAgent, SearchMemoryStore
+
+index = WhooshFullTextIndex("notes.idx")
+step = LLMAgent(
+    source="ollama", model="gpt-oss", judge=True, tools=["search_files_findings"],
+    memory=SearchMemoryStore(index, name="notes", min_score=1.0),
+)
+```
+
 ## `llmAgent` parameters
 
 | Parameter | Default | Meaning |
@@ -252,6 +307,7 @@ same tool from Python.
 | `question_field` | — | the property holding the question findings are judged against (default: the prompt) |
 | `findings_as` | — | sets the run's `FindingsOutcome` on the item, which must be a dict (see below) |
 | `hooks` | — | from Python: more [Strands hook providers](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/hooks/) for every agent |
+| `memory` | — | from Python: Strands memory stores (a `SearchMemoryStore`, say), singly or as a list, searched with each item and put before the model without a tool call; or a `MemoryManager` (see above) |
 
 `max_seconds` (an `llmAgent` and `AgentChat` parameter, not only the
 loop's) is the wall-clock budget per item: once spent, every further
@@ -261,7 +317,7 @@ budget" unless the agent had already said it had enough; `max_turns`
 stays the hard cap on turns.
 
 The loop, `findings_as` and `hooks` are `llmAgent`'s; `AgentChat` has
-none of them. The loop judges only what finding tools return: with no
+none of them (it does take `memory`). The loop judges only what finding tools return: with no
 finding tool among `tools`, there is nothing to judge, and each item
 ends "stopped without saying it had enough" with nothing kept.
 

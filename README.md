@@ -148,11 +148,13 @@ writes it to `chatterlang_ref.html`/`chatterlang_ref.txt`, and
   (ask_user, think, calculator, files, web, notepad, …) with a working
   example of each, chatterlang scripts as tools, and agent skills folders.
 - [The findings loop](docs/findings.md) — `llmAgent[judge=True]`:
-  finding tools (Python `@finding_tool` or chatterlang `findingTool`)
-  whose results are judged inside the agent loop and accumulated per
-  question, with `enough_information` as the stop and a turn countdown
-  in every reply; the session, judge and hook on their own; testing it
-  offline with `ScriptedJudge`.
+  finding tools (Python `@finding_tool` or chatterlang `findingTool`,
+  and the file and web tools' finding variants) whose results are
+  judged inside the agent loop and accumulated per question, with
+  `enough_information` as the stop and a turn countdown in every
+  reply; a talkpipe search index put before the model as Strands
+  memory (`SearchMemoryStore`); the session, judge and hook on their
+  own; testing it offline with `ScriptedJudge`.
 - [Design](docs/design.md) — how the package is structured, the reply
   hygiene both entry points share, where Strands fits, and where the
   layer came from.
