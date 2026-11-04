@@ -1021,3 +1021,89 @@ def test_max_seconds_must_be_positive():
         _step(max_seconds=0)
     with pytest.raises(ValueError, match="max_seconds must be a number"):
         _step(max_seconds="soon")
+
+
+# -- the judge's verdict -----------------------------------------------------
+#
+# Besides deciding on each finding, the judge says whether what is kept
+# would answer the question and what it still lacks; the session passes
+# that on to the model and the outcome.
+
+
+def test_parse_verdict_reads_enough_and_missing():
+    from talkpipe_agents import Verdict, parse_judgements, parse_verdict
+
+    reply = (
+        '{"decisions": [{"id": "f1", "keep": true, "score": 5, "reason": "r"}], '
+        '"enough": false, "missing": "the tower\'s height"}'
+    )
+    verdict = parse_verdict(reply)
+    assert isinstance(verdict, Verdict)
+    assert (verdict.enough, verdict.missing) == (False, "the tower's height")
+    assert [d.id for d in verdict.decisions] == ["f1"]
+    assert [d.id for d in parse_judgements(reply)] == ["f1"]
+    # Without the fields, or as a bare list, there is no verdict.
+    assert parse_verdict('{"decisions": [{"id": "f1", "keep": true}]}').enough is None
+    assert parse_verdict('[{"id": "f1", "keep": "yes"}]').enough is None
+    assert parse_verdict("f1 keep fine").enough is None
+    # A reply cut off mid-JSON gives its complete decisions and no verdict.
+    cut = '{"decisions": [{"id": "f1", "keep": true}, {"id": "f2", "ke'
+    assert (
+        [d.id for d in parse_verdict(cut).decisions],
+        parse_verdict(cut).enough,
+    ) == (
+        ["f1"],
+        None,
+    )
+
+
+def test_the_judge_returns_the_verdict_with_its_judgements():
+    from talkpipe_agents import Judged
+
+    replies = iter(
+        [
+            '{"decisions": [{"id": "f1", "keep": true}], "enough": true}',
+            '{"decisions": [{"id": "f1", "keep": true}]}',
+        ]
+    )
+    judge = FindingsJudge(generate=lambda _p: next(replies))
+    judged = judge.judge(NOTES[:1], QUESTION)
+    assert isinstance(judged, Judged)
+    assert list(judged) == judged
+    assert (judged.enough, judged.missing) == (True, "")
+    assert judge.judge(NOTES[:1], QUESTION).enough is None
+
+
+def test_the_session_tells_the_model_what_the_judge_finds_missing(scripted_model):
+    judge = ScriptedJudge(keep={"geography"}, enough=False, missing="the population")
+    scripted_model.call("search_notes", query="capital").say("Paris.")
+    step = _step(judge=judge, field="q", set_as="answer", findings_as="outcome")
+    (item,) = step([{"q": QUESTION}])
+    reply = scripted_model.tool_results[0].text
+    assert "The judge finds the answer still lacks: the population." in reply
+    outcome = item["outcome"]
+    assert (outcome.sufficient, outcome.missing) == (False, "the population")
+    assert any("Judge: still missing the population." in line for line in outcome.trace)
+
+
+def test_the_session_tells_the_model_when_the_judge_says_enough(scripted_model):
+    judge = ScriptedJudge(keep={"geography"}, enough=True)
+    scripted_model.call("search_notes", query="capital").say("Paris.")
+    step = _step(judge=judge, field="q", set_as="answer", findings_as="outcome")
+    (item,) = step([{"q": QUESTION}])
+    reply = scripted_model.tool_results[0].text
+    assert "call enough_information now" in reply
+    assert item["outcome"].sufficient is True
+    assert item["outcome"].missing == ""
+    assert any(
+        line.endswith("Judge: enough to answer.") for line in item["outcome"].trace
+    )
+
+
+def test_a_verdict_with_nothing_kept_is_not_passed_on(scripted_model):
+    judge = ScriptedJudge(keep=(), enough=False, missing="everything")
+    scripted_model.call("search_notes", query="capital").say("No idea.")
+    step = _step(judge=judge, field="q", set_as="answer", findings_as="outcome")
+    (item,) = step([{"q": QUESTION}])
+    assert "The judge finds" not in scripted_model.tool_results[0].text
+    assert item["outcome"].sufficient is False

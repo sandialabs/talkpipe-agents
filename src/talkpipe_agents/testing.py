@@ -65,7 +65,7 @@ from strands.types.streaming import StreamEvent
 from strands.types.tools import ToolChoice, ToolSpec
 
 from . import models
-from .findings import Decision, Finding, FindingsJudge
+from .findings import Decision, Finding, FindingsJudge, Verdict
 
 TextTurn = tuple[Literal["text"], str]
 ToolTurn = tuple[Literal["tool"], str, dict[str, Any]]
@@ -279,7 +279,10 @@ class ScriptedJudge(FindingsJudge):
     score)`` — the relevance grade, 1 to 5, that ranks kept findings
     and lets one displace a weaker one at ``max_kept``. *error*, when
     set, is raised in place of every decision, to test the judge
-    failing (which keeps every finding as "not judged"). ``batches``
+    failing (which keeps every finding as "not judged"). *enough* and
+    *missing*, when given, are the verdict every judgement carries
+    (whether what is kept would answer the question, and what it
+    lacks); by default there is none. ``batches``
     records the labels of the findings each judgement was shown and
     ``prompts`` the prompt it would have sent.
     """
@@ -290,16 +293,19 @@ class ScriptedJudge(FindingsJudge):
         | Callable[[Finding], bool | tuple[bool, str] | tuple[bool, str, int]] = (),
         *,
         error: Exception | None = None,
+        enough: bool | None = None,
+        missing: str = "",
     ) -> None:
         super().__init__()
         self._rule = keep if callable(keep) else frozenset(keep)
         self._error = error
+        self._enough, self._missing = enough, missing
         self.batches: list[list[str]] = []
         self.prompts: list[str] = []
 
     def decide(
         self, prompt: str, labelled: list[tuple[str, Finding]]
-    ) -> dict[str, Decision]:
+    ) -> dict[str, Decision] | Verdict:
         self.prompts.append(prompt)
         self.batches.append([finding.label for _, finding in labelled])
         if self._error is not None:
@@ -319,7 +325,9 @@ class ScriptedJudge(FindingsJudge):
                 keep, reason = finding.label in self._rule, ""
             reason = reason or ("relevant" if keep else "not relevant")
             decisions[label] = Decision(label, bool(keep), reason, score)
-        return decisions
+        if self._enough is None:
+            return decisions
+        return Verdict(list(decisions.values()), self._enough, self._missing)
 
 
 __all__ = [

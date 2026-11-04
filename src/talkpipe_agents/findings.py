@@ -319,13 +319,20 @@ class FindingsOutcome:
     the run ended, and the trace of what the agent did. ``error`` is
     the exception text when the run stopped with one; ``undecided``
     counts findings shown but neither kept nor ignored (only possible
-    without a judge)."""
+    without a judge). ``sufficient`` and ``missing`` are the judge's
+    last verdict on what is kept: whether it would answer the question
+    (``None`` when the judge gave no verdict) and, in a phrase, what the
+    answer still lacks."""
 
     findings: list[Finding]
     note: str
     trace: list[str] = field(default_factory=list)
     error: str = ""
     undecided: int = 0
+    # The judge's last verdict on the kept findings: whether they would
+    # answer the question (None when it gave none) and what is missing.
+    sufficient: bool | None = None
+    missing: str = ""
 
 
 class FindingsSession:
@@ -391,6 +398,9 @@ class FindingsSession:
         # kept would answer the question well — the intended stop.
         self.enough = False
         self.enough_reason = ""
+        # The judge's last verdict on what is kept (see note_verdict).
+        self.sufficient: bool | None = None
+        self.missing = ""
         self.lock = threading.RLock()
 
     # -- bookkeeping ---------------------------------------------------------
@@ -500,6 +510,29 @@ class FindingsSession:
         why = f" — {reason}" if reason else ""
         verb = "keep" if keep else "ignore"
         self.tell(f"agent · {verb} {fid}{named}{graded}{why}. {self.status_line()}")
+
+    def note_verdict(self, sufficient: bool | None, missing: str = "") -> None:
+        """Record the judge's verdict on what is kept: whether it would
+        answer the question, and what the answer still lacks. A verdict
+        of ``None`` (the judge gave none) leaves the last one standing."""
+        if sufficient is None:
+            return
+        self.sufficient = sufficient
+        self.missing = "" if sufficient else missing.strip().rstrip(".")
+
+    @property
+    def verdict_note(self) -> str:
+        """The judge's verdict, phrased for the model; empty without one."""
+        if self.sufficient is None or not self.kept_ids:
+            return ""
+        if self.sufficient:
+            return (
+                "The judge finds that what is kept would answer the question: "
+                "call enough_information now unless you see a gap it missed."
+            )
+        if self.missing:
+            return f"The judge finds the answer still lacks: {self.missing}."
+        return "The judge finds that what is kept does not yet answer the question."
 
     # -- stopping ------------------------------------------------------------
 
@@ -732,6 +765,8 @@ class FindingsSession:
         if below_floor:
             lines.append(_floor_note(below_floor))
         lines.append(self._known_summary())
+        if verdict := self.verdict_note:
+            lines.append(verdict)
         if self.at_capacity:
             lines.append(
                 f"You have kept the maximum of {self.max_kept} findings. "
@@ -816,7 +851,13 @@ class FindingsSession:
         )
         self.tell(note)
         return FindingsOutcome(
-            self.kept, note, list(self.trace), error=error, undecided=undecided
+            self.kept,
+            note,
+            list(self.trace),
+            error=error,
+            undecided=undecided,
+            sufficient=self.sufficient,
+            missing=self.missing,
         )
 
 
@@ -828,8 +869,8 @@ Decide for every finding whether to keep it or ignore it. The default is keep: k
 
 Also grade each finding's relevance from 1 to 5: 5 answers the question, or a large part of it, directly; 3 is useful supporting material; 1 is barely related. The agent can keep only so many findings, and the grades decide which stay when more are kept than fit, so grade the findings relative to each other.
 
-Reply with one decision per finding, in order, giving the finding's id, keep (true or false), the grade as score, and a short reason: for a kept finding, what it contributes to the answer; for an ignored one, why it does not help. Reply with JSON only, in this shape and nothing else:
-{"decisions": [{"id": "f1", "keep": true, "score": 4, "reason": "..."}, {"id": "f2", "keep": false, "score": 1, "reason": "..."}]}"""
+Reply with one decision per finding, in order, giving the finding's id, keep (true or false), the grade as score, and a short reason: for a kept finding, what it contributes to the answer; for an ignored one, why it does not help. Then say whether what is already known together with the findings you keep would let the question be answered well: enough, true or false, and when false, missing: in one phrase, what the answer still lacks. Reply with JSON only, in this shape and nothing else:
+{"decisions": [{"id": "f1", "keep": true, "score": 4, "reason": "..."}, {"id": "f2", "keep": false, "score": 1, "reason": "..."}], "enough": false, "missing": "..."}"""
 
 
 @dataclass
@@ -844,6 +885,17 @@ class Decision:
 
 
 @dataclass
+class Verdict:
+    """A judge's reply, read: its decisions, and whether what is known
+    plus what it keeps would answer the question (``None`` when the
+    reply did not say) with what the answer still lacks."""
+
+    decisions: list[Decision]
+    enough: bool | None = None
+    missing: str = ""
+
+
+@dataclass
 class Judgement:
     """A decision applied to its finding."""
 
@@ -851,6 +903,15 @@ class Judgement:
     keep: bool
     reason: str
     score: int | None = None
+
+
+class Judged(list[Judgement]):
+    """The judgements for one call, in order, with the judge's verdict
+    on the whole: ``enough`` (``None`` when it gave none) and
+    ``missing``. A plain list to everything that reads it as one."""
+
+    enough: bool | None = None
+    missing: str = ""
 
 
 _KEEP_WORDS = frozenset({"keep", "true", "yes"})
@@ -886,9 +947,21 @@ def _as_score(value: Any) -> int | None:
     return max(MIN_SCORE, min(MAX_SCORE, score))
 
 
-def _json_decisions(data: Any) -> list[Decision] | None:
+def _json_verdict(data: Any) -> Verdict | None:
+    """The reply's JSON as a verdict: its decisions (a list, bare or under
+    ``decisions``) and, from the object, ``enough`` and ``missing``."""
+    enough, missing = None, ""
     if isinstance(data, dict):
+        enough = _as_keep(data.get("enough", data.get("sufficient")))
+        missing = str(data.get("missing") or "")
         data = data.get("decisions")
+    decisions = _json_decisions(data)
+    if decisions is None:
+        return None
+    return Verdict(decisions, enough, missing)
+
+
+def _json_decisions(data: Any) -> list[Decision] | None:
     if not isinstance(data, list):
         return None
     decisions = []
@@ -930,13 +1003,21 @@ def _salvaged_decisions(text: str) -> list[Decision]:
 
 
 def parse_judgements(text: str) -> list[Decision]:
-    """The judge's decisions from its reply, however it wrote them.
+    """The judge's decisions from its reply, however it wrote them: the
+    decisions of :func:`parse_verdict`."""
+    return parse_verdict(text).decisions
+
+
+def parse_verdict(text: str) -> Verdict:
+    """The judge's reply, read: its decisions and its verdict on the whole.
 
     The prompt asks for one JSON object; that is accepted bare, fenced,
     or surrounded by prose, as is a bare JSON list of decisions. A
     decision's ``score`` (or ``grade``) is optional: a reply without
     grades reads as before, and its decisions rank as the default grade.
-    A reply cut off mid-JSON gives the decisions that are complete.
+    The object's ``enough`` and ``missing`` are optional too: a reply
+    without them gives no verdict (``enough`` is ``None``). A reply cut
+    off mid-JSON gives the decisions that are complete and no verdict.
     Failing JSON, every line that reads as ``<id> <keep|ignore|true|false>
     <reason>`` is an ungraded decision. Raises ``ValueError`` when no
     decision can be read."""
@@ -945,23 +1026,23 @@ def parse_judgements(text: str) -> list[Decision]:
         start, end = text.find(start_char), text.rfind(end_char)
         if 0 <= start < end:
             try:
-                decisions = _json_decisions(json.loads(text[start : end + 1]))
+                verdict = _json_verdict(json.loads(text[start : end + 1]))
             except ValueError:
-                decisions = None
-            if decisions is not None:
-                return decisions
+                verdict = None
+            if verdict is not None:
+                return verdict
     decisions = _salvaged_decisions(text)
     if decisions:
-        return decisions
+        return Verdict(decisions)
     for line in text.splitlines():
         match = _LINE_RE.match(line)
         if match is None:
             continue
-        label, verdict, reason = match.groups()
+        label, word, reason = match.groups()
         decisions.append(
             Decision(
                 label,
-                verdict.lower() in _KEEP_WORDS,
+                word.lower() in _KEEP_WORDS,
                 # Hyphens and the en and em dashes models separate with.
                 reason.strip(" \t:-–—.,"),  # noqa: RUF001 - the dashes are the point
             )
@@ -973,7 +1054,7 @@ def parse_judgements(text: str) -> list[Decision]:
         if len(reply) > 120:
             reply = reply[:119] + "…"
         raise ValueError(f"the judge's reply held no decisions: {reply!r}")
-    return decisions
+    return Verdict(decisions)
 
 
 def _label_of(decision_id: str) -> str:
@@ -1144,12 +1225,15 @@ class FindingsJudge(AbstractSegment):
 
     def decide(
         self, prompt: str, labelled: list[tuple[str, Finding]]
-    ) -> dict[str, Decision]:
-        """The decisions for *labelled*, by label (``f1``, …): one model
-        call on *prompt*. Raises when the reply cannot be read."""
+    ) -> dict[str, Decision] | Verdict:
+        """The decisions for *labelled*: one model call on *prompt*, read
+        as a :class:`Verdict` (decisions plus whether what is kept would
+        answer the question). A subclass may return the decisions alone,
+        by label (``f1``, …), and give no verdict. Raises when the reply
+        cannot be read."""
         with self._lock:
             reply = self.generate(prompt)
-        return {_label_of(d.id): d for d in parse_judgements(reply)}
+        return parse_verdict(reply)
 
     def judge(
         self,
@@ -1158,19 +1242,22 @@ class FindingsJudge(AbstractSegment):
         looking_for: str = "",
         known: Iterable[str] = (),
         seen: Iterable[str] = (),
-    ) -> list[Judgement]:
+    ) -> Judged:
         """Judge *findings* for *question*, in order. Findings whose key is
         in *seen* are left out; a finding the model gave no decision for,
         or every finding when the model failed, is kept with a reason that
-        starts "not judged"."""
+        starts "not judged". The list's ``enough`` and ``missing`` are the
+        judge's verdict on what is kept, from the last reply that gave one
+        (``None`` when none did)."""
         skip = {str(key) for key in seen}
         labelled: list[tuple[str, Finding]] = []
         for finding in as_findings(list(findings or [])):
             if finding.key in skip:
                 continue
             labelled.append((f"f{len(labelled) + 1}", finding))
+        judged = Judged()
         if not labelled:
-            return []
+            return judged
         decisions: dict[str, Decision] = {}
         undecided = "not judged: the model gave no decision for it"
         size = self.batch_size or len(labelled)
@@ -1194,6 +1281,10 @@ class FindingsJudge(AbstractSegment):
                     )
                     undecided = f"not judged: {_one_line(exc)}"
                     break
+                if isinstance(found, Verdict):
+                    if found.enough is not None:
+                        judged.enough, judged.missing = found.enough, found.missing
+                    found = {_label_of(d.id): d for d in found.decisions}
                 wanted = {label for label, _ in pending}
                 decisions.update(
                     (label, d) for label, d in found.items() if label in wanted
@@ -1204,7 +1295,6 @@ class FindingsJudge(AbstractSegment):
                         sum(1 for label, _ in pending if label not in decisions),
                         len(pending),
                     )
-        judged = []
         for label, finding in labelled:
             decision = decisions.get(label)
             if decision is None:
@@ -1355,6 +1445,7 @@ class JudgeFindings(HookProvider):
             ignored: list[str] = []
             displaced: list[str] = []
             passed_over = 0
+            session.note_verdict(judgements.enough, judgements.missing)
             for judgement in judgements:
                 weakest = None
                 if judgement.keep and session.at_capacity:
@@ -1377,6 +1468,13 @@ class JudgeFindings(HookProvider):
                 + (f", {len(displaced)} displaced" if displaced else "")
                 + (f", {passed_over} passed over" if passed_over else "")
                 + f"{floor}. {session.status_line()}"
+                + (
+                    " Judge: enough to answer."
+                    if judgements.enough
+                    else f" Judge: still missing {session.missing}."
+                    if judgements.enough is False and session.missing
+                    else ""
+                )
             )
             return session.reply(
                 kept,

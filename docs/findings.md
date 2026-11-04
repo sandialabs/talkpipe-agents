@@ -364,6 +364,9 @@ After each item, `last_outcome` holds a `FindingsOutcome`:
   nothing relevant to keep, stopped without saying it had enough, or
   stopped with an error;
 - `trace`: every progress line;
+- `sufficient` and `missing`: the judge's last verdict on what is kept,
+  whether it would answer the question (`None` when the judge gave
+  none) and what the answer still lacks;
 - `error` and `undecided`.
 
 ### Answering with talkpipe's RAG segments
@@ -411,7 +414,9 @@ another system with different tools:
   judge's grade), `kept` (best first), `ignored`, `notes`,
   `known_notes()`, `seen_keys()`, `score_of`, `displaceable_by` (at
   capacity, the weakest kept finding a grade would displace),
-  `declare_enough`, the `guard` that finding tools enforce, `note_turn`
+  `declare_enough`, `note_verdict` / `verdict_note` (the judge's view
+  of what is kept, as recorded and as told to the model), the `guard`
+  that finding tools enforce, `note_turn`
   / `turns_left` / `turns_note()`, `timed_out`, `reply(...)` (the standard tool
   reply, including which findings a call displaced) and `outcome(...)`. The
   `stop_instruction` argument sets what the agent is told once the run
@@ -425,7 +430,16 @@ another system with different tools:
   bare list, or one `<id> <keep|ignore> <reason>` line per finding.
   Each JSON decision may carry a `score`, the 1-to-5 relevance grade
   the prompt asks for; a reply without grades reads as before, and its
-  decisions rank as the default grade.
+  decisions rank as the default grade. The reply's object may also
+  carry the judge's verdict on the whole, `enough` (would what is
+  known plus what it keeps answer the question?) and `missing` (in a
+  phrase, what the answer still lacks); `parse_verdict` reads both,
+  and `judge` returns them on its list as `enough` and `missing`
+  (`None` and `""` when the reply gave none). The session passes the
+  verdict on: the tool reply tells the model what the judge finds
+  missing, or to call `enough_information` when the judge finds what
+  is kept sufficient, and the outcome carries it as `sufficient` and
+  `missing`. The agent still decides; the verdict is advice.
   Some models ignore a requested output format, so schema-guided
   generation alone is not enough. A reply cut off mid-JSON by the
   model's output limit still yields the decisions that are complete,

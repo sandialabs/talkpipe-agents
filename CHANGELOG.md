@@ -7,6 +7,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The judge gives a verdict on the whole as well as a decision per
+  finding: whether what is known plus what it keeps would answer the
+  question (`enough`) and, if not, what the answer still lacks
+  (`missing`). `parse_verdict` reads it (`parse_judgements` is
+  unchanged), `FindingsJudge.judge` returns it on its list (`Judged`),
+  the tool reply tells the model what the judge finds missing, or to
+  call `enough_information` when the judge finds what is kept
+  sufficient, the trace says `Judge: enough to answer` / `Judge: still
+  missing …`, and `FindingsOutcome` carries it as `sufficient` and
+  `missing`. A reply without the fields gives no verdict, so judges and
+  models that do not supply one behave as before. `ScriptedJudge` takes
+  `enough=` and `missing=`.
 - Finding variants of the file and web tools: `read_file_findings`
   (a file in passages of at most `passage_chars` characters, 1000 by
   default, cut at paragraph breaks), `fetch_url_findings` (the same for a page) and
