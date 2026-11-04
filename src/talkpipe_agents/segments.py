@@ -33,13 +33,17 @@ each item gets a ``FindingsSession`` for its question, every finding
 tool's results are judged by the same model before the agent sees them,
 and the agent stops by calling ``enough_information``; ``findings=True``
 runs the session without a judge, the agent keeping and ignoring by
-hand. The run's ``FindingsOutcome`` (kept findings, how it ended, the
+hand. ``first_tool`` names a finding tool to call with the question
+before the agent's first turn: its findings are judged first, and when
+the judge finds them enough the agent only answers, taking no search
+turn at all. The run's ``FindingsOutcome`` (kept findings, how it ended, the
 trace) is kept as ``last_outcome`` and, with ``findings_as``, set on
 the item.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable, Iterable, Iterator
 from typing import Annotated, Any
@@ -57,6 +61,7 @@ from .findings import (
     FindingsJudge,
     FindingsSession,
     JudgeFindings,
+    finding_function,
 )
 from .hooks import AgentHooks, AgentRetryStrategy, Deadline
 from .memory import memory_manager
@@ -170,6 +175,15 @@ class LLMAgent(AbstractSegment):
             "With judge or findings: set the run's FindingsOutcome (kept "
             "findings, how the run ended, the trace) as this property of the item",
         ] = None,
+        first_tool: Annotated[
+            str | None,
+            "With judge or findings: a finding tool to call with the prompt, "
+            "as its first argument, before the agent's first turn. Its "
+            "findings are judged like any call's; when the judge finds them "
+            "enough to answer, the agent is told to answer from them at once "
+            "instead of searching, otherwise it starts from them and is told "
+            "what is missing",
+        ] = None,
         hooks: Annotated[
             list | None,
             "From Python: more Strands hook providers for every agent",
@@ -213,9 +227,11 @@ class LLMAgent(AbstractSegment):
         self.max_kept = max_kept
         self.question_field = question_field
         self.findings_as = findings_as
+        self.first_tool = first_tool
         self.last_outcome: Any = None
         self._session: FindingsSession | None = None
         self._loop: JudgeFindings | None = None
+        self._first: tuple[Any, Callable[..., Any], str] | None = None
         if judge is not False or findings:
             if judge is True:
                 judge = FindingsJudge(
@@ -234,6 +250,59 @@ class LLMAgent(AbstractSegment):
             if self._loop.judge is None:
                 wanted += ["keep_finding", "ignore_finding"]
             self.tools += resolve_agent_tools([n for n in wanted if n not in names])
+            self._first = self._find_first_tool(first_tool) if first_tool else None
+        elif first_tool:
+            raise ValueError(
+                f"llmAgent: first_tool={first_tool!r} needs the findings loop: "
+                "set judge=True or findings=True"
+            )
+
+    def _find_first_tool(self, name: str) -> tuple[Any, Callable[..., Any], str]:
+        """The tool named *name* among this agent's tools (resolved and
+        added if it is not there yet), the finding function behind it, and
+        the name of its first parameter, which the prompt is passed as.
+        Fails now, when the segment is built, for a name that is not a
+        finding tool."""
+        tool = next(
+            (t for t in self.tools if getattr(t, "tool_name", None) == name), None
+        )
+        if tool is None:
+            [tool] = resolve_agent_tools([name])
+            self.tools.append(tool)
+        func = finding_function(tool)
+        if func is None:
+            raise ValueError(
+                f"llmAgent: first_tool={name!r} is not a finding tool (one made "
+                "with @finding_tool or findingTool), so it returns no findings to judge"
+            )
+        params = [
+            p
+            for p in inspect.signature(func).parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            and p.name != "tool_context"
+        ]
+        if not params:
+            raise ValueError(
+                f"llmAgent: first_tool={name!r} takes no argument to pass the prompt as"
+            )
+        return tool, func, params[0].name
+
+    def _seed(self, loop: JudgeFindings, session: FindingsSession, prompt: str) -> str:
+        """Call the first tool with the question and judge its findings
+        before the agent starts; the agent's opening prompt. A tool that
+        fails is traced, and the agent starts as if nothing had been
+        called."""
+        if self._first is None:
+            return prompt
+        tool, func, param = self._first
+        name = tool.tool_name
+        try:
+            found = func(**{param: session.question})
+        except Exception as exc:
+            session.tell(f"agent ← {name}: error: {exc}")
+            return prompt
+        reply = loop.seed(name, found, args={param: session.question})
+        return session.opening_prompt(reply, tool=name)
 
     def tell(self, message: str) -> None:
         """Report *message*: to the running findings session's trace as
@@ -320,7 +389,7 @@ class LLMAgent(AbstractSegment):
             tell=self._progress,
         )
         try:
-            answer = self._ask(agent, prompt)
+            answer = self._ask(agent, self._seed(loop, session, prompt))
         except Exception as exc:
             self.last_outcome = session.outcome(error=str(exc) or repr(exc))
             raise

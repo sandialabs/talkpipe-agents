@@ -22,14 +22,16 @@ directly for Python composition.
   (calculator, time and date, text extraction, read-only file access,
   URL fetching, a notepad kept in the agent's Strands state), all
   registered by name.
-- ``findings`` — the findings loop: ``Finding``, ``finding_tool``,
-  ``FindingsSession`` (one question's kept/ignored findings, stop rule,
-  turn countdown), the ``FindingsJudge`` (also the ``judgeFindings``
-  segment) and the ``JudgeFindings`` hook that judges every finding
-  tool's results inside the agent loop, plus the ``enough_information``
-  / ``keep_finding`` / ``ignore_finding`` session tools; turned on with
-  ``llmAgent[judge=True]``. ``findingTool`` (in ``script_tools``) makes
-  a chatterlang script a finding tool.
+- ``findings`` — the findings loop, a package: ``Finding`` and
+  ``finding_tool``, ``FindingsSession`` (one question's kept/ignored
+  findings, the judge's verdict, stop rule, turn countdown, how the run
+  ended), the ``FindingsJudge`` (also the ``judgeFindings`` segment) and
+  the ``JudgeFindings`` hook that judges every finding tool's results
+  inside the agent loop (and, with ``seed``, a call made before the agent
+  starts), plus the ``enough_information`` / ``keep_finding`` /
+  ``ignore_finding`` session tools; turned on with ``llmAgent[judge=True]``,
+  ``first_tool=`` for the call before the agent. ``findingTool`` (in
+  ``script_tools``) makes a chatterlang script a finding tool.
 - ``segments`` — the ``llmAgent`` chatterlang segment.
 - ``chat`` — ``AgentChat``, a thin multi-turn wrapper for interactive
   sessions (what a chat UI drives).
@@ -87,11 +89,13 @@ from .findings import (
     as_findings,
     below_score_floor,
     enough_information,
+    finding_function,
     finding_tool,
     ignore_finding,
     keep_finding,
     parse_judgements,
     parse_verdict,
+    session_of,
 )
 from .hooks import AgentHooks, Deadline
 from .memory import SearchMemoryStore, memory_manager
@@ -148,6 +152,7 @@ __all__ = [
     "enough_information",
     "fetch_url",
     "fetch_url_findings",
+    "finding_function",
     "finding_tool",
     "ignore_finding",
     "keep_finding",
@@ -168,6 +173,7 @@ __all__ = [
     "save_note",
     "search_files",
     "search_files_findings",
+    "session_of",
     "strip_think",
     "strip_tool_leak",
     "summarize_notes",

@@ -297,6 +297,47 @@ step = LLMAgent(
 )
 ```
 
+## A first call before the agent
+
+Many questions are answered by the first call: a search for the
+question itself finds what is needed, and an agent run on top only
+costs turns. `first_tool` names a finding tool to call with the
+question before the agent's first turn. The tool runs, its findings are
+judged exactly as a call from inside the loop would be, and then:
+
+- when the judge's verdict is that what it kept answers the question,
+  the run has enough (the trace says `enough information, by the
+  judge's verdict`, the outcome's `ending` is `judge_enough`) and the
+  agent is told to answer from the kept findings at once, without
+  searching: one tool call, one judge call, one model turn;
+- otherwise the agent opens on the call's reply and the judge's
+  `missing` phrase, told not to repeat that call, so its turns go to
+  the gap.
+
+```
+INPUT FROM "How tall is the Eiffel Tower, according to my notes?"
+| llmAgent[source="ollama", model="gpt-oss", tools=["search_notes"], judge=True,
+           first_tool="search_notes"]
+| print
+```
+
+The question is passed as the tool's first parameter (`query` above).
+A tool that fails is traced and the agent starts as if nothing had
+been called. The pieces are available on their own:
+`JudgeFindings.seed(tool, findings, args=…)` judges findings a host
+obtained itself and ends the session on the verdict
+(`FindingsSession.accept_verdict`), and
+`FindingsSession.opening_prompt(reply, tool=…)` writes the agent's
+first message for either case (or, without a reply, for a run where
+nothing has been called yet). An application that answers in a step
+of its own, from the kept findings, skips the agent entirely when
+`accept_verdict` returns true; talkpipe-vault's agent search does so.
+
+The judge's `enough` is advice when the agent runs and a decision here.
+Whether it is strict enough to be trusted with that decision is the
+application's call to measure; a judge that says enough too readily
+turns multi-step questions into single-search answers.
+
 ## `llmAgent` parameters
 
 | Parameter | Default | Meaning |
@@ -308,6 +349,7 @@ step = LLMAgent(
 | `findings_as` | — | sets the run's `FindingsOutcome` on the item, which must be a dict (see below) |
 | `hooks` | — | from Python: more [Strands hook providers](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/hooks/) for every agent |
 | `memory` | — | from Python: Strands memory stores (a `SearchMemoryStore`, say), singly or as a list, searched with each item and put before the model without a tool call; or a `MemoryManager` (see above) |
+| `first_tool` | — | with the loop on: a finding tool to call with the question before the agent's first turn, judged first (see above) |
 
 `max_seconds` (an `llmAgent` and `AgentChat` parameter, not only the
 loop's) is the wall-clock budget per item: once spent, every further
@@ -363,6 +405,11 @@ After each item, `last_outcome` holds a `FindingsOutcome`:
   filled the maximum, hit its time budget, hit the turn cap, found
   nothing relevant to keep, stopped without saying it had enough, or
   stopped with an error;
+- `ending`: the same as a code, for an application that words the note
+  itself: `judge_enough` (the first call's findings answered it, by the
+  judge's verdict, with no agent turn), `enough`, `capacity`, `timeout`,
+  `turn_cap`, `nothing_relevant`, `undecided` or `error`
+  (`talkpipe_agents.findings.ENDINGS` maps each to its words);
 - `trace`: every progress line;
 - `sufficient` and `missing`: the judge's last verdict on what is kept,
   whether it would answer the question (`None` when the judge gave
@@ -415,10 +462,12 @@ another system with different tools:
   `known_notes()`, `seen_keys()`, `score_of`, `displaceable_by` (at
   capacity, the weakest kept finding a grade would displace),
   `declare_enough`, `note_verdict` / `verdict_note` (the judge's view
-  of what is kept, as recorded and as told to the model), the `guard`
+  of what is kept, as recorded and as told to the model),
+  `accept_verdict` (end the run on that view), the `guard`
   that finding tools enforce, `note_turn`
   / `turns_left` / `turns_note()`, `timed_out`, `reply(...)` (the standard tool
-  reply, including which findings a call displaced) and `outcome(...)`. The
+  reply, including which findings a call displaced), `opening_prompt(...)`,
+  `ending(...)` and `outcome(...)`. The
   `stop_instruction` argument sets what the agent is told once the run
   is over. The default tells it to answer from the kept findings; an
   application that answers in a later step can tell it to reply `done`.
@@ -472,7 +521,9 @@ another system with different tools:
   and `enough_information`, and the loop runs there (add
   `talkpipe_agents.Deadline(max_seconds)` to the hooks for the time
   budget; it is what `llmAgent` installs behind `max_seconds`). Without a judge,
-  findings are registered and shown undecided. `llmAgent` also tells
+  findings are registered and shown undecided. `session_of(tool_context)`
+  gives any other tool the running session, to look a finding up by id
+  or add a line to the trace. `llmAgent` also tells
   the model how the loop works, in its system prompt; a bare agent
   needs the same text, `talkpipe_agents.findings.FINDINGS_PROTOCOL`
   (`FINDINGS_PROTOCOL_UNJUDGED` without a judge), or it may answer

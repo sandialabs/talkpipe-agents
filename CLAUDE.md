@@ -15,10 +15,14 @@ design ("Putting Agents in their Place").
   `tools.py` (name→tool registry + `ask_user`/`think`),
   `script_tools.py` (chatterlang scripts as tools: `make_script_tool`
   + the `scriptTool` segment; `make_finding_tool` + `findingTool`),
-  `findings.py` (the findings loop: `Finding`, `finding_tool`,
-  `FindingsSession`, the `FindingsJudge`/`judgeFindings` segment, the
-  `JudgeFindings` hook, the `enough_information`/`keep_finding`/
-  `ignore_finding` session tools; on with `llmAgent[judge=True]`), `common_tools.py` (the generic tool
+  `findings/` (the findings loop, a package with one module per part:
+  `finding.py` for `Finding` and `finding_tool`'s result shapes,
+  `session.py` for `FindingsSession` and how a run ended, `judge.py` for
+  the `FindingsJudge`/`judgeFindings` segment, `hook.py` for the
+  `JudgeFindings` hook and `session_of`, `finding_tools.py` for
+  `finding_tool` and the `enough_information`/`keep_finding`/
+  `ignore_finding` session tools; on with `llmAgent[judge=True]`,
+  `first_tool=` judges one call before the agent starts), `common_tools.py` (the generic tool
   suite: calculator, time/date, regex, read-only files, `fetch_url`,
   their finding variants, notepad, kept in the agent's Strands state),
   `memory.py` (`SearchMemoryStore`: a talkpipe search as a Strands

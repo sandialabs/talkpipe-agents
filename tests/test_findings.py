@@ -1121,3 +1121,150 @@ def test_a_judge_returning_a_plain_list_gives_no_verdict(scripted_model):
     assert "The judge finds" not in scripted_model.tool_results[0].text
     assert item["outcome"].sufficient is None
     assert len(item["outcome"].findings) == len(NOTES)
+
+
+# -- a call before the agent ---------------------------------------------------
+
+
+def _opening(scripted_model) -> str:
+    return scripted_model.prompts[0][0]["content"][0]["text"]
+
+
+def test_first_tool_judged_enough_means_the_agent_only_answers(scripted_model):
+    judge = ScriptedJudge(keep={"geography", "history"}, enough=True)
+    scripted_model.say("Paris.")
+    step = _step(
+        judge=judge,
+        first_tool="search_notes",
+        findings_as="outcome",
+        field="q",
+        set_as="a",
+    )
+    (item,) = step([{"q": QUESTION}])
+    # The tool ran with the question, before any model turn, and was judged.
+    assert searched == [(QUESTION, "")]
+    outcome = item["outcome"]
+    assert outcome.ending == "judge_enough"
+    assert outcome.note.startswith(
+        "Agent found the first call enough: answered without an agent turn: "
+        "kept 2 findings after 1 call, ignored 1."
+    )
+    assert [f.label for f in outcome.findings] == ["geography", "history"]
+    trace = " | ".join(outcome.trace)
+    assert "agent → search_notes({'query': " in trace
+    assert "before the agent" in trace
+    assert "enough information, by the judge's verdict" in trace
+    text = _opening(scripted_model)
+    assert text.startswith(f"Question: {QUESTION}\n")
+    assert "the judge finds that what it kept answers the question" in text
+    assert "Kept:" in text
+    assert "[f1] geography" in text
+    # The model took one turn: the answer, with no tool call.
+    assert len(scripted_model.prompts) == 1
+
+
+def test_first_tool_judged_wanting_hands_over_to_the_agent(scripted_model):
+    judge = ScriptedJudge(keep={"geography"}, enough=False, missing="the date")
+    scripted_model.call("search_notes", query="since when", looking_for="the date")
+    scripted_model.call("enough_information", reason="date found").say("987.")
+    step = _step(
+        judge=judge,
+        first_tool="search_notes",
+        findings_as="outcome",
+        field="q",
+        set_as="a",
+    )
+    (item,) = step([{"q": QUESTION}])
+    text = _opening(scripted_model)
+    assert "has already been made and judged; its reply is below. Do not repeat" in text
+    assert "The judge says it still lacks: the date." in text
+    assert "At most 10 findings are kept, and you have 8 turns" in text
+    outcome = item["outcome"]
+    assert outcome.ending == "enough"
+    assert outcome.note.startswith("Agent judged it had enough to answer (date found)")
+    assert "after 2 calls" in outcome.note
+    # Every note the agent's own search found had been decided by the first
+    # call, so the judge was not asked again and the reply says so.
+    assert len(judge.prompts) == 1
+    assert scripted_model.tool_results[0].text.startswith(
+        "No new findings from search_notes."
+    )
+
+
+def test_a_judge_without_a_verdict_leaves_the_first_call_to_the_agent(scripted_model):
+    scripted_model.call("enough_information", reason="ok").say("Paris.")
+    step = _step(
+        first_tool="search_notes", findings_as="outcome", field="q", set_as="a"
+    )
+    (item,) = step([{"q": QUESTION}])
+    assert "Do not repeat it." in _opening(scripted_model)
+    assert "still lacks:" not in _opening(scripted_model)
+    assert item["outcome"].ending == "enough"
+
+
+def test_a_failing_first_tool_starts_the_agent_as_usual(scripted_model):
+    @finding_tool(register=False)
+    def broken(query: str, looking_for: str = "") -> list[Finding]:
+        """Always fails.
+
+        Args:
+            query: Ignored.
+            looking_for: Ignored.
+        """
+        raise RuntimeError("index offline")
+
+    scripted_model.call("search_notes", query="capital")
+    scripted_model.call("enough_information", reason="ok").say("Paris.")
+    step = _step(tools=["search_notes", broken], first_tool="broken")
+    [answer] = step([QUESTION])
+    assert answer == "Paris."
+    assert _opening(scripted_model) == QUESTION
+    assert any(
+        "agent ← broken: error: index offline" in line
+        for line in step.last_outcome.trace
+    )
+
+
+def test_first_tool_is_added_to_the_tools_when_missing(scripted_model):
+    judge = ScriptedJudge(keep={"geography"}, enough=True)
+    scripted_model.say("Paris.")
+    step = _step(judge=judge, tools=[], first_tool="search_notes")
+    assert "search_notes" in {t.tool_name for t in step.tools}
+    assert list(step([QUESTION])) == ["Paris."]
+
+
+def test_first_tool_without_the_loop_or_not_a_finding_tool_is_refused():
+    with pytest.raises(ValueError, match="needs the findings loop"):
+        LLMAgent(source="scripted", model="any", first_tool="search_notes")
+    with pytest.raises(ValueError, match="not a finding tool"):
+        _step(tools=["search_notes", "count_words"], first_tool="count_words")
+
+
+def test_the_session_names_its_ending_and_the_hook_seeds_without_an_agent():
+    session = FindingsSession(QUESTION, max_kept=5, max_turns=3)
+    loop = JudgeFindings(session, ScriptedJudge(keep={"geography"}, enough=True))
+    reply = loop.seed("search_notes", NOTES, args={"query": QUESTION})
+    assert reply.startswith("3 new finding(s) from search_notes: kept 1, ignored 2.")
+    assert session.enough
+    assert session.enough_by == "judge"
+    assert session.ending() == "judge_enough"
+    assert "Answer the question now from the kept findings" in session.opening_prompt(
+        reply, tool="search_notes"
+    )
+    # Without a session the hook only renders what was found.
+    assert JudgeFindings().seed("t", ["one"]) == "[1] t\none"
+    # The other endings, by their conditions.
+    fresh = FindingsSession(QUESTION, max_kept=1, max_turns=3)
+    assert fresh.ending() == "undecided"
+    assert fresh.ending("limit_turns") == "turn_cap"
+    assert fresh.ending(error="boom") == "error"
+    assert fresh.opening_prompt().startswith(
+        f"Question: {QUESTION}\nNothing has been called yet."
+    )
+    fresh.calls = 1
+    assert fresh.ending() == "nothing_relevant"
+    fresh.apply(fresh.register(NOTES[0]), True, "fine")
+    assert fresh.ending() == "capacity"
+    fresh.declare_enough("done")
+    assert fresh.ending() == "enough"
+    assert fresh.outcome().ending == "enough"

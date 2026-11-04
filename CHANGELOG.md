@@ -7,6 +7,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A first call before the agent. `llmAgent[first_tool="…"]` (with the
+  findings loop on) calls that finding tool with the question before
+  the agent's first turn and judges its findings; when the judge finds
+  them enough, the agent only answers, taking no search turn, and
+  otherwise it opens on the call's reply and what is missing. The
+  pieces are public for hosts that run the call themselves:
+  `JudgeFindings.seed(tool, findings, args=…)`,
+  `FindingsSession.accept_verdict()` (end the run on the judge's
+  verdict; `enough_by` says whether the agent or the judge ended it)
+  and `FindingsSession.opening_prompt(reply, tool=…)`.
+- `FindingsOutcome.ending` names how a run ended as a code
+  (`judge_enough`, `enough`, `capacity`, `timeout`, `turn_cap`,
+  `nothing_relevant`, `undecided`, `error`; `FindingsSession.ending()`
+  computes it, `ENDINGS` holds the words), so an application can word
+  the note its own way without re-deriving the conditions.
+- `session_of(tool_context)` and `finding_function(tool)` are public:
+  the running session for a tool that is not a finding tool, and the
+  function behind a finding tool.
 - The judge gives a verdict on the whole as well as a decision per
   finding: whether what is known plus what it keeps would answer the
   question (`enough`) and, if not, what the answer still lacks
@@ -55,6 +73,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reply cut off mid-JSON, as a model's output limit does (qwen3 judging
   eight findings), instead of reading none and keeping everything
   unjudged.
+
+### Changed
+
+- `talkpipe_agents.findings` is a package: `finding`, `session`,
+  `judge`, `hook` and `finding_tools` modules, one per part of the
+  loop. Every name is still importable from `talkpipe_agents.findings`.
 
 ## 0.3.0 (2026-10-30)
 
