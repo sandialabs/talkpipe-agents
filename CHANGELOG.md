@@ -5,6 +5,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 0.4.0 (2026-11-05)
+
 ### Added
 
 - A first call before the agent. `llmAgent[first_tool="…"]` (with the
